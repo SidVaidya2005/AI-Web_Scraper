@@ -1,0 +1,43 @@
+# Secrets / local config — NEVER commit real keys (env vars read only in app/config.py).
+# .env.example IS committed (see build-plan Feature 01); the real .env is not.
+.env
+.env.*
+!.env.example
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (uv creates .venv)
+.venv/
+venv/
+env/
+
+# uv: the lockfile IS committed (see architecture.md tree). Nothing project-local to ignore.
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage / type-check / lint caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
