@@ -62,6 +62,52 @@
 
 ---
 
+## Phase 0 · Feature 02 — Config & settings  *(2026-06-22)*
+
+**Built:** `app/config.py` (`Settings(BaseSettings)` with all 26 documented env vars +
+cached `get_settings()`); `tests/test_config.py` (7 tests).
+
+**Decisions:**
+- **`MAX_CONTENT_CHARS = 50000`** is the authoritative `Settings` default (was provisional
+  in `.env.example`, which already matched — left unchanged).
+- **API-key presence is NOT validated in `Settings`.** Keys are read as `SecretStr` (may be
+  empty); the registry/provider (Feature 10) errors if the active provider's key is missing.
+  Rationale: keeps F02 scoped to relationships per the build-plan, and `/health` (liveness)
+  + keyless tests must run without provider keys (`architecture.md`).
+- **Literal + SecretStr typing.** `LLM_PROVIDER` / `LOG_LEVEL` are `Literal` (bad value fails
+  at construction); `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are `SecretStr` (no leak in
+  logs/reprs). Provider code reads keys via `.get_secret_value()` in F10.
+- **Positivity via `Field` constraints, relationship via `model_validator`.** Per-field
+  `gt=0` (timeouts, byte/char caps, `MAX_REDIRECTS`, job caps, `port`, `rate_limit`,
+  `job_ttl`) and `ge=0` (`fetch_max_retries`, `render_settle_ms`, `shutdown_grace_seconds`);
+  a single `@model_validator(mode="after")` enforces
+  `max_concurrent_jobs <= max_queued_jobs <= max_jobs`. Both fail fast at construction.
+- **`SettingsDep` deferred to Feature 03.** Defining the FastAPI alias
+  `Annotated[Settings, Depends(get_settings)]` now would import FastAPI into `config.py` for
+  something no handler consumes yet — deferred to where it's first used (scope discipline).
+
+**Gotchas:**
+- **`ALLOWED_HOSTS` CSV vs. pydantic-settings JSON decode.** A `list[str]` field auto-attempts
+  JSON-decoding of its raw env value, so `127.0.0.1,localhost` fails as invalid JSON *before*
+  any validator runs. Fix (confirmed via Context7 `/pydantic/pydantic-settings`):
+  `Annotated[list[str], NoDecode]` (surgical, per-field — not a global `enable_decoding=False`)
+  plus a `@field_validator(mode="before")` that splits on `,` and strips. Same treatment
+  required for any future `list`/complex setting.
+- **Test isolation:** tests construct `Settings(_env_file=None)` so a real `.env` can't bleed
+  in, and `delenv` the asserted-default vars so a value in the dev shell can't either. The
+  cache-identity test brackets `get_settings()` with `cache_clear()` in a `finally`.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 13 files formatted.
+- `uv run pytest -q` → **8 passed** (7 config + 1 smoke), exit 0.
+- Confirmed by test: defaults applied; env overrides read incl. CSV `ALLOWED_HOSTS` split;
+  `MAX_QUEUED_JOBS < MAX_CONCURRENT_JOBS` and `FETCH_TIMEOUT_SECONDS=0` each raise
+  `ValidationError` at construction; bad `LLM_PROVIDER` enum rejected; `SecretStr` masks the
+  key in `repr`/`str` and exposes it only via `get_secret_value()`; `get_settings()` cached.
+- No env access added outside `app/config.py` (invariant preserved).
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

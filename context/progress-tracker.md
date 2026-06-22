@@ -12,18 +12,22 @@ immediately know what is done, what is in progress, and what is next.
 ## Current Status
 
 **Phase:** Phase 0 — Foundation
-**Last completed:** 01 Project scaffold & tooling (2026-06-22)
-**Next:** 02 Config & settings
+**Last completed:** 02 Config & settings (2026-06-22)
+**Next:** 03 App skeleton + health endpoint
 
 **Carry-over into next session:**
-- **Scaffold is uncommitted.** All Feature 01 files (`pyproject.toml`, `.python-version`,
-  `uv.lock`, `app/`, `tests/`, `.env.example`, `.github/workflows/ci.yml`) are in the
-  working tree but **not committed/pushed** — so **CI has not actually run green yet**.
-  First action when committing: branch off `main`, commit the scaffold, push to confirm CI.
-- **Feature 02 must finalize `MAX_CONTENT_CHARS`** — `.env.example` uses a provisional
-  `50000`; set the authoritative `Settings` default and the `model_validator` relationships
-  (`MAX_CONCURRENT_JOBS <= MAX_QUEUED_JOBS <= MAX_JOBS`, positivity) per `code-standards.md`.
-- Local Python is 3.14.5 but the project is **pinned to 3.12** via `.python-version`
+- **Feature 02 files are uncommitted** (`app/config.py`, `tests/test_config.py`) — commit
+  only when asked. Feature 01 scaffold is already committed (`f076a94`, on `main`).
+- **`SettingsDep` was deliberately deferred to Feature 03.** Config only ships `Settings`
+  + cached `get_settings()`; the FastAPI alias `Annotated[Settings, Depends(get_settings)]`
+  belongs with the first handler/middleware that consumes it. Feature 03 also wires
+  `Settings` into `create_app()` lifespan + `TrustedHostMiddleware(allowed_hosts)`.
+- **`ALLOWED_HOSTS` parses CSV via `NoDecode` + a before-validator.** Any *new* `list`/complex
+  setting added later needs the same `NoDecode` treatment, or pydantic-settings' automatic
+  JSON-decode will reject a comma-separated env value.
+- `MAX_CONTENT_CHARS` is finalized at **50000** (authoritative `Settings` default; `.env.example`
+  already matched, left unchanged).
+- Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
 
 ---
@@ -32,7 +36,7 @@ immediately know what is done, what is in progress, and what is next.
 
 ### Phase 0 — Foundation
 - [x] 01 Project scaffold & tooling
-- [ ] 02 Config & settings
+- [x] 02 Config & settings
 - [ ] 03 App skeleton + health endpoint
 
 ### Phase 1 — Fetch & Render
@@ -79,6 +83,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
 - **Schema conformance = provider `strict` + post-validation**; forcing the tool only guarantees it's called.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
 - **The fetch contract returns a `FetchResult`** (html, mode, status, content_type, final_url) so the fallback matrix can branch — not bare HTML. The browser builds it from the **real** `page.goto()` response + `page.url`, never hardcoded `200`/`text/html`/original URL.
-- **Settings validate relationships** (`MAX_CONCURRENT_JOBS <= MAX_QUEUED_JOBS <= MAX_JOBS`, positivity) via a `model_validator`, failing fast at startup.
+- **Feature 02 config (2026-06-22):** `app/config.py` `Settings` (pydantic-settings) reads all 26 vars; per-field `Field(gt=0/ge=0)` positivity + a `model_validator` for `max_concurrent_jobs <= max_queued_jobs <= max_jobs` — fail-fast at construction. `LLM_PROVIDER`/`LOG_LEVEL` are `Literal`, API keys `SecretStr`; `ALLOWED_HOSTS` CSV-parsed via `NoDecode` + before-validator (avoids pydantic-settings JSON-decode). `MAX_CONTENT_CHARS=50000` finalized; API-key presence deferred to provider/registry (F10); `SettingsDep` deferred to F03. Full detail in `build-journal.md`.
 - **Single process / single Uvicorn worker**; `HOST`/`PORT` honored only via the `python -m app` (`app/__main__.py`) entry point.
 - **Host-allowlist + Origin checks ship in v1** (cheap DNS-rebinding/CSRF baseline); token-CSRF + auth remain prerequisites for any remote bind.
