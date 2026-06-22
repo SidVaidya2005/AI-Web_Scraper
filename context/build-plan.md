@@ -138,6 +138,14 @@ Orchestrate cleaned content + prompt/schema → validated structured result.
 - `app/extraction/engine.py` `extract(content, *, prompt, schema)`: pick provider, call `extract`, validate against the schema when present; treat page content as untrusted (delimiter/system prompt enforced by the provider).
 - Verify: with a stub provider, returns a validated dict for a schema; a schema mismatch becomes a `ProviderError`/job error.
 
+> **Built 2026-06-23 (deviation noted):** the engine **does not** pick the provider —
+> the signature is `extract(content, *, prompt, schema, provider: LLMProvider)` and the
+> **F14 runner injects** a ready provider (built via `registry.get_provider(settings,
+> override=request.provider)`). This diverges from `architecture.md`'s data-flow snippet
+> (`provider = registry.get_provider(settings)` shown inside the engine); chosen for a
+> registry-free, trivially-testable engine. The engine reads no settings and never calls
+> the registry. See `build-journal.md` → Feature 12.
+
 ---
 
 ## Phase 3 — Jobs & API

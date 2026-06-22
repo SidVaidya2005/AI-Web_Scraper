@@ -653,6 +653,69 @@ plan: `~/.claude/plans/11-extraction-schemas-kind-naur.md`.
 
 ---
 
+## Phase 2 · Feature 12 — Extraction engine  *(2026-06-23)*
+
+**Built:** `app/extraction/engine.py` (`async extract(content, *, prompt, schema,
+provider) -> dict[str, Any]`); `tests/test_extraction_engine.py` (6 tests). No new
+dependencies (`jsonschema` already in the stack); no SDK touched. Closes Phase 2.
+Approved plan: `~/.claude/plans/12-extraction-engine-curried-island.md`.
+
+**Decisions** (architect session, developer-confirmed):
+- **Provider is injected, not selected by the engine** (developer's call between the two
+  options presented). Signature is `extract(content, *, prompt, schema, provider:
+  LLMProvider)`; the engine imports neither `registry` nor `Settings`. The **F14 runner**
+  will build the provider via `registry.get_provider(settings, override=
+  job.request.provider)` and pass it in. **Documented deviation** from `architecture.md`'s
+  data-flow snippet (`provider = registry.get_provider(settings)` inside the engine) —
+  annotated under F12 in `build-plan.md`, same as F11's `JobResponse` deferral note.
+  Rationale: a registry-free engine is trivially testable with a fake provider (no
+  monkeypatching), and keeps provider lifecycle/selection in one place (the runner).
+- **Normalize before extract; validate against the original** (locked by F11). The
+  provider receives `normalize_for_strict(schema)` as `json_schema`; the raw result is
+  validated against the **un-normalized** `schema`. `schema is None` → `json_schema=None`
+  and validation is skipped entirely.
+- **Reuse F11's `validate_output`** (don't rebuild a `Draft202012Validator`) — it already
+  enables `FORMAT_CHECKER` and deliberately raises the raw jsonschema `ValidationError`
+  for the engine to wrap.
+- **Schema mismatch → `ProviderError`** with the documented message `f"extraction did not
+  match schema: {exc.message}"` (uses `exc.message`, not `str(exc)`, so it stays
+  readable/user-safe). Per `library-docs.md`.
+- **Engine's only `try/except` wraps the validation step, never the provider call.** A
+  `ProviderError` from the provider (or the registry, upstream) propagates unchanged — the
+  F14 runner is the top-level error boundary. The engine adds no untrusted-content framing
+  (that is the provider's job, F10).
+
+**Gotchas:**
+- **Validating against the original is what makes the "extra key passes" test meaningful.**
+  For `{"type":"object","properties":{"name":{"type":"string"}}}`, a result `{"name":"x",
+  "extra":1}` passes (the original has no `additionalProperties:false`) — proving the
+  validation target is the original, not the strict-normalized schema. A separate test
+  asserts the provider *received* the normalized schema (`additionalProperties:false` +
+  `required:["name"]`), pinning both halves.
+- **`normalize_for_strict` deep-copies**, so a test asserts the caller's `schema` dict is
+  byte-for-byte unchanged after `extract()` — the engine never mutates request state.
+- **No `pytest.mark.asyncio` needed** — `asyncio_mode = "auto"` (set in F01). The fake
+  provider records the `json_schema`/`content`/`prompt` it received for assertions, and
+  can be primed to raise (provider-error passthrough test).
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 42 files
+  formatted.
+- `uv run pytest -q` → **155 passed, 1 skipped** (149 prior + 6 new), exit 0. The skip is
+  the Chromium-gated browser integration test; one pre-existing Starlette/httpx TestClient
+  deprecation warning, unrelated.
+- Confirmed by test: happy path returns the result and the provider is handed the
+  normalized schema; validation targets the original (extra-key result passes); a
+  type-mismatch result → `ProviderError` starting `"extraction did not match schema:"`;
+  `schema=None` skips validation and forwards `json_schema=None`, returning the dict
+  verbatim; a provider `ProviderError` propagates unchanged (`is` the same object); the
+  original schema is not mutated.
+- Invariants held: `app/extraction/engine.py` imports only stdlib `typing`, `jsonschema`,
+  and `app.extraction.schemas` / `app.providers.base` — no LLM SDK, no `httpx`/`playwright`,
+  no network/job-state, no `os`/env, and **no registry** (provider arrives injected).
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

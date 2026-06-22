@@ -11,41 +11,43 @@ immediately know what is done, what is in progress, and what is next.
 
 ## Current Status
 
-**Phase:** Phase 2 — AI Extraction (in progress)
-**Last completed:** 11 Extraction schemas (2026-06-23)
-**Next:** 12 Extraction engine (Phase 2 — AI Extraction)
+**Phase:** Phase 2 — AI Extraction (complete) → Phase 3 next
+**Last completed:** 12 Extraction engine (2026-06-23)
+**Next:** 13 In-memory job store (Phase 3 — Jobs & API)
 
 **Carry-over into next session:**
-- **F11 built:** `app/extraction/schemas.py` (`validate_request_schema`, `normalize_for_strict`,
-  `validate_output`, `InvalidSchemaError(ValueError)`) + `app/models.py` (`ExtractRequest` only).
-  Suite at **149 passing, 1 skipped** (127 prior + 22 new; the skip is the gated browser
-  integration test). Approved plan: `~/.claude/plans/11-extraction-schemas-kind-naur.md`.
-- **Next is F12 (Extraction engine):** `app/extraction/engine.py` `extract(content, *, prompt,
-  schema)` — pick the provider via `registry.get_provider(settings, override=request.provider)`,
-  call **`normalize_for_strict(schema)` BEFORE `provider.extract(...)`**, then
-  `validate_output(raw, schema=schema)` against the **ORIGINAL** schema. Wrap `validate_output`'s
-  jsonschema `ValidationError` into a `ProviderError` (`"extraction did not match schema: …"`,
-  per `library-docs.md`); F11 deliberately lets that error propagate unwrapped.
-- **F11 decisions (locked):** submit-time gate = a Pydantic `@field_validator` on
-  `ExtractRequest.output_schema` delegating to `validate_request_schema` (raises
-  `InvalidSchemaError(ValueError)` → FastAPI 422 in F16); subset enforcement = **targeted
-  denylist** (`oneOf/allOf/not/if/then/else/contains/prefixItems/patternProperties/...`) + a hard
-  root-`type:object` rule; **`JobResponse` deferred to F13/F16** (it needs `Job`/`JobStatus` from
-  F13) — `app/models.py` holds only `ExtractRequest` for now.
-- **Denylist correctness:** the walk is structure-aware (`_iter_subschemas` descends only schema
-  positions), so a property literally named `not`/`if` is accepted and `enum`/`const` data is
-  never traversed. Output is validated against the original schema; normalization is provider-only.
-- **F10 was committed:** `f29e564 2.10-Anthropic-provider` — the prior "commit F10 now or
-  proceed?" OPEN item is resolved; the tree was clean before F11.
+- **F12 built:** `app/extraction/engine.py` `extract(content, *, prompt, schema, provider:
+  LLMProvider)` — `normalize_for_strict(schema)` → `provider.extract(...)` →
+  `validate_output(raw, schema=schema)` against the **ORIGINAL** schema, wrapping the jsonschema
+  `ValidationError` into `ProviderError("extraction did not match schema: …")`. **Provider is
+  INJECTED** (engine reads no settings, never calls the registry) — the F14 runner builds it via
+  `registry.get_provider(settings, override=request.provider)`. Documented deviation from
+  `architecture.md`'s data-flow (annotated in `build-plan.md` F12). Suite **155 passing, 1
+  skipped** (149 prior + 6 new). Approved plan: `~/.claude/plans/12-extraction-engine-curried-island.md`.
+  **Phase 2 closed.**
+- **Next is F13 (In-memory job store):** `app/jobs/models.py` (`Job`, `JobStatus`) +
+  `app/jobs/store.py` `JobStore` (`create`/`get`/`list`/`mark_running`/`mark_done`/`mark_error`,
+  `asyncio.Lock`, TTL eviction of **terminal** jobs from `finished_at`, `MAX_JOBS` cap,
+  newest-first listing). This is also where **`JobResponse` lands in `app/models.py`** (deferred
+  from F11 — it needs `Job`/`JobStatus`).
+- **F12 → F14 contract (for when the runner is built):** the runner builds the provider via
+  `registry.get_provider(settings, override=job.request.provider)` and calls
+  `engine.extract(content, prompt=…, schema=job.request.output_schema, provider=provider)`. A
+  `ProviderError` (schema mismatch, provider/registry failure) propagates to the runner, the
+  error boundary, which records it as a job error.
+- **Locked extraction invariants:** provider gets the strict-**normalized** schema; output is
+  validated against the **original**; `schema=None` skips validation; engine adds no
+  untrusted-content framing (provider owns the system prompt + `<page_content>` delimiter).
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F11 code — `app/extraction/schemas.py`,
-  `app/models.py`, `tests/test_extraction_schemas.py`, `tests/test_models.py` (all new); plus
-  these context docs. (Reminder: per CLAUDE.md, commits never add a co-author.)
-- **OPEN — pending decision (resolve first next session):** commit F11 now, or proceed
-  straight to F12? Developer was asked at session end and hadn't answered. F11 is complete and
-  verified (149 passing/1 skipped, ruff clean) — purely the commit-vs-continue call. (HEAD is
-  still `f29e564 2.10-Anthropic-provider`.)
+- **Uncommitted (commit only when asked):** F12 code — `app/extraction/engine.py`,
+  `tests/test_extraction_engine.py` (both new); plus these context docs (`progress-tracker.md`,
+  `build-journal.md`, `build-plan.md`). HEAD is `a4f3208 2.11-Extraction-schemas`; tree was clean
+  before F12. (Reminder: per CLAUDE.md, commits never add a co-author.)
+- **OPEN — pending decision (resolve first next session):** commit F12 now, or proceed straight
+  to F13? Developer was asked at session end and hadn't answered. F12 is complete and verified
+  (155 passing / 1 skipped, ruff clean) — purely the commit-vs-continue call. (HEAD is still
+  `a4f3208 2.11-Extraction-schemas`.)
 
 ---
 
@@ -67,7 +69,7 @@ immediately know what is done, what is in progress, and what is next.
 - [x] 09 LLM provider interface
 - [x] 10 Anthropic provider
 - [x] 11 Extraction schemas
-- [ ] 12 Extraction engine
+- [x] 12 Extraction engine
 
 ### Phase 3 — Jobs & API
 - [ ] 13 In-memory job store
@@ -92,6 +94,15 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 12 Extraction engine built (2026-06-23):** `app/extraction/engine.py`
+  `extract(content, *, prompt, schema, provider: LLMProvider)` — `normalize_for_strict(schema)`
+  → `provider.extract(...)` → `validate_output` against the **original** schema, wrapping the
+  jsonschema `ValidationError` into `ProviderError("extraction did not match schema: …")`. The
+  **provider is injected by the F14 runner** (engine reads no settings, never calls the registry)
+  — a **documented deviation** from `architecture.md`'s data-flow (annotated in `build-plan.md`
+  F12) chosen for a registry-free, trivially-testable engine. `schema=None` skips validation; a
+  provider `ProviderError` propagates unchanged (runner is the boundary). **155 passing, 1
+  skipped. Phase 2 closed.** (F09 provider-interface decision pruned → `build-journal.md`.)
 - **Feature 11 Extraction schemas built (2026-06-23):** `app/extraction/schemas.py` —
   `validate_request_schema` (root `type:object` + a **targeted denylist** of out-of-subset
   keywords → `InvalidSchemaError(ValueError)`), `normalize_for_strict` (deep copy; sets
@@ -113,13 +124,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   F22), empty key → `ProviderError` at selection. `LLM_TIMEOUT_SECONDS` wired into the client now;
   retries → F21. Test seam = injected fake client (SDK never hit). `anthropic` imported only here.
   **127 passing.** (F06 browser-render decision pruned → `build-journal.md`.)
-- **Feature 09 provider interface built (2026-06-22):** `app/providers/base.py` —
-  `ProviderError(RuntimeError)` + a `@runtime_checkable` `LLMProvider` Protocol with one
-  async, keyword-only `extract(*, content, prompt, json_schema) -> dict[str, Any]` (object
-  envelope; raises `ProviderError`). Interface-only — **no SDK / registry / concrete
-  provider** (F10); import from the real path, no `__init__` barrel. `tests/test_providers.py`
-  asserts `isinstance(fake, LLMProvider)`, a non-conformer fails it, and `extract()` awaits to
-  a `dict`. **Phase 2 begun.** (F05 HTTP-fetch decision pruned → `build-journal.md`.)
 - **Feature 07 fetch strategy built (2026-06-22):** `app/fetching/fetch_service.py`
   (`fetch(url, *, browser_manager, settings, render=False)` + `needs_render`) implements the
   architecture **fallback matrix**. `_fetch_http` retries **only** `TransientFetchError` up to
