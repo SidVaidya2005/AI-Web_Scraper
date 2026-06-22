@@ -12,42 +12,47 @@ immediately know what is done, what is in progress, and what is next.
 ## Current Status
 
 **Phase:** Phase 3 — Jobs & API (in progress)
-**Last completed:** 13 In-memory job store (2026-06-23)
-**Next:** 14 Async job runner (Phase 3 — Jobs & API)
+**Last completed:** 14 Async job runner (2026-06-23)
+**Next:** 15 Job scheduler — concurrency, admission & shutdown (Phase 3 — Jobs & API)
 
 **Carry-over into next session:**
-- **F13 built:** `app/jobs/models.py` (`Job` Pydantic model + `is_terminal`; `JobStatus(StrEnum)`)
-  and `app/jobs/store.py` (`JobStore`: `create`/`get`/`list`/`mark_running`/`mark_done`/`mark_error`
-  under an `asyncio.Lock`; **lazy** `_evict` — TTL from `finished_at` + oldest-**terminal**
-  `MAX_JOBS` sweep, never touching `queued`/`running`; newest-first via `reversed(insertion)`;
-  `JobStateError` on illegal/missing/terminal transitions). **`JobResponse` landed in
-  `app/models.py`** (echoes `url`+`prompt`; `status` typed **`str`**; `Job` imported under
-  `TYPE_CHECKING` to break the `app/models ↔ app/jobs/models` cycle). Suite **174 passing, 1
-  skipped** (155 prior + 19 new). Approved plan: `~/.claude/plans/13-in-memory-job-vivid-parrot.md`.
-- **Next is F14 (Async job runner):** `app/jobs/runner.py` `run_job(job_id, *, app_state)`:
-  `mark_running` → `fetch_service.fetch(url, browser_manager=…, settings=…, render=job.request.render)`
-  → `clean(html, settings=…)` → `engine.extract(content, prompt=…, schema=job.request.output_schema,
-  provider=registry.get_provider(settings, override=job.request.provider))` → `mark_done(result, mode)`.
-  Known errors (`ProviderError`/`FetchError`/`ValidationError`) → `mark_error(str(exc))`; unknown →
-  generic message (traceback logged); **never raises**. **F14 also wires `app.state.job_store` into
-  the lifespan** (deferred from F13 per the F06→F07 build-in-isolation precedent).
-- **F13 → F14 contract:** the runner mutates state only through the store methods; mark signatures
-  are `mark_done(job_id, *, result, mode)` and `mark_error(job_id, *, error)`, both returning the Job.
+- **F14 built:** `app/jobs/runner.py` — `run_job(job_id, *, app_state)` drives
+  `mark_running → fetch_service.fetch(str(url), …, render=…) → cleaner.clean → registry.get_provider →
+  engine.extract → mark_done(result, mode)`; the project's **error boundary** (never raises). Known
+  errors (`ProviderError`/`FetchError`+subclasses/`ValidationError`) → `mark_error(str(exc))`; unknown
+  → generic `"internal error — see server logs"` (traceback logged). A local **`RunnerState` Protocol**
+  (`job_store`/`browser_manager`/`settings`) types `app_state`; a best-effort **`_terminalize`** swallows
+  `JobStateError` so an already-terminal/missing job can't make the boundary raise. **Lifespan now wires
+  `app.state.job_store = JobStore(settings=settings)`** (F13-deferred). Suite **185 passing, 1 skipped**
+  (174 prior + 11 new). Approved plan: `~/.claude/plans/f14-async-job-vivid-harbor.md`.
+- **Next is F15 (Job scheduler — concurrency, admission & shutdown):** `app/jobs/scheduler.py` —
+  `try_reserve()`/`release()`/`submit(job_id)` + `SchedulerShuttingDown`. Run `run_job` under a
+  `MAX_CONCURRENT_JOBS` semaphore with **retained task refs** (no fire-and-forget `create_task`); atomic
+  `try_reserve()` (sync check-and-increment, no `await`) caps in-flight+waiting at `MAX_QUEUED_JOBS` →
+  over cap `503`/`429`, no job created; `release()` on terminal / failed-create / failed-submit. Admission
+  **closes first on shutdown** (`try_reserve()` → False); a `submit()` failing after reserve+create
+  `release()`s **and** `mark_error`s the job. **Lifespan shutdown must drain the scheduler BEFORE
+  `browser_manager.aclose()`** (in-flight renders finish first) — the `app/main.py` finally block is
+  ready for this insertion.
+- **F14 → F15 contract:** the scheduler calls `run_job(job_id, app_state=app_state)`; `run_job` already
+  owns all error handling and never raises, so the scheduler only manages concurrency/admission/lifecycle.
+  The **`RunnerState` Protocol is reusable** as the scheduler's `app_state` type.
 - **Locked store invariants:** only **terminal** jobs are evicted (TTL from `finished_at`; `MAX_JOBS`
-  drops oldest terminal); `queued`/`running` are **never** evicted; transitions are enforced
+  drops oldest terminal); `queued`/`running` are **never** evicted; transitions enforced
   (`mark_running` only from `queued`; `mark_done`/`mark_error` only from non-terminal; `mark_error`
-  allowed from `queued` for the shutdown path); `get`/`list`/`mark_*` return **live** Job refs —
-  mutate only via `mark_*` under the lock.
+  allowed from `queued`/`running`); `get`/`list`/`mark_*` return **live** Job refs — mutate only via
+  `mark_*` under the lock.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F13 — `app/jobs/models.py`, `app/jobs/store.py`,
-  `tests/test_jobs_models.py`, `tests/test_jobs_store.py` (new); `app/models.py`,
-  `tests/test_models.py` (modified) — **plus still-uncommitted F12** (`app/extraction/engine.py`,
-  `tests/test_extraction_engine.py`) and these context docs. HEAD is `a4f3208 2.11-Extraction-schemas`.
+- **Uncommitted (commit only when asked):** F14 — `app/jobs/runner.py` (new), `tests/test_jobs_runner.py`
+  (new); `app/main.py`, `tests/test_main.py` (modified) — **plus still-uncommitted F12** (`app/extraction/
+  engine.py`, `tests/test_extraction_engine.py`) **and F13** (`app/jobs/models.py`, `app/jobs/store.py`,
+  `tests/test_jobs_models.py`, `tests/test_jobs_store.py` new; `app/models.py`, `tests/test_models.py`
+  modified) and these context docs. HEAD is `a4f3208 2.11-Extraction-schemas`.
   (Reminder: per CLAUDE.md, commits never add a co-author.)
-- **OPEN — pending decision:** F12 **and** F13 are both complete and verified (174 passing / 1
+- **OPEN — pending decision:** F12, F13 **and** F14 are all complete and verified (185 passing / 1
   skipped, ruff clean) but uncommitted; HEAD is still `a4f3208 2.11-Extraction-schemas`. Decide the
-  commit strategy (e.g. F12 then F13 as two commits) before/at the next session.
+  commit strategy (e.g. F12 → F13 → F14 as three commits) before/at the next session.
 
 ---
 
@@ -73,7 +78,7 @@ immediately know what is done, what is in progress, and what is next.
 
 ### Phase 3 — Jobs & API
 - [x] 13 In-memory job store
-- [ ] 14 Async job runner
+- [x] 14 Async job runner
 - [ ] 15 Job scheduler — concurrency, backpressure & shutdown
 - [ ] 16 Extract & jobs API endpoints
 
@@ -94,6 +99,16 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 14 Async job runner built (2026-06-23):** `app/jobs/runner.py`
+  `run_job(job_id, *, app_state)` — the pipeline driver and **top-level error boundary** (never
+  raises): `mark_running → fetch_service.fetch(str(url)) → cleaner.clean → registry.get_provider →
+  engine.extract → mark_done`. Known errors (`ProviderError`/`FetchError`+subclasses/`ValidationError`)
+  → `mark_error(str(exc))`; unknown → generic non-leaky message (traceback logged). `app_state` typed by
+  a local **`RunnerState` Protocol** (`job_store`/`browser_manager`/`settings`); a best-effort
+  **`_terminalize`** swallows `JobStateError` so an already-terminal/missing job can't break "never
+  raises". Provider is **built in the runner** (`registry.get_provider(settings, override=request.provider)`)
+  and injected (F12 contract). Lifespan now wires `app.state.job_store`. **185 passing, 1 skipped.**
+  (F10 Anthropic-provider decision pruned → `build-journal.md`.)
 - **Feature 13 In-memory job store built (2026-06-23):** `app/jobs/models.py` (`Job` +
   `is_terminal`; `JobStatus(StrEnum)`) and `app/jobs/store.py` `JobStore` — `asyncio.Lock`-guarded
   `dict`, **lazy** `_evict` (TTL from `finished_at` + oldest-**terminal** `MAX_JOBS` sweep;
@@ -122,17 +137,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   property literally named `not` is accepted. `app/models.py` `ExtractRequest` wires the gate via a
   `@field_validator` (→ 422 in F16); **`JobResponse` deferred to F13/F16**. **149 passing, 1
   skipped.** (F08 cleaner decision pruned → `build-journal.md`.)
-- **Feature 10 Anthropic provider + registry built (2026-06-22):**
-  `app/providers/anthropic_provider.py` (`AnthropicProvider`) does forced tool-use on
-  `AsyncAnthropic` (tool `emit_extraction`, `tool_choice` forcing it, untrusted-content system
-  prompt + `<page_content>` delimiter, `max_tokens=4096`); model from settings; SDK errors →
-  generic `ProviderError` (full detail logged, never `str(exc)`). **Sets `strict: true` when a
-  schema is present and passes it through unchanged — strict normalization is deferred to F11.**
-  `app/providers/registry.py` `get_provider(settings, *, override=None)` resolves
-  `override or settings.llm_provider`; only `"anthropic"` wired (`"openai"`/unknown → `ProviderError`,
-  F22), empty key → `ProviderError` at selection. `LLM_TIMEOUT_SECONDS` wired into the client now;
-  retries → F21. Test seam = injected fake client (SDK never hit). `anthropic` imported only here.
-  **127 passing.** (F06 browser-render decision pruned → `build-journal.md`.)
 - **Scheduler bounded by concurrency AND atomic admission** (15): `MAX_CONCURRENT_JOBS` semaphore + retained task refs + `try_reserve()` (synchronous check-and-increment, no `await` → no TOCTOU) capping in-flight+waiting at `MAX_QUEUED_JOBS`; over cap → `503`/`429`, no job created; `release()` on terminal / failed-create / failed-submit. Admission **closes first on shutdown** (`try_reserve()` → False), and a `submit()` that fails after reserve+create releases the slot **and** terminalizes the job (no `queued` zombie). Shutdown drains **before** the browser closes.
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.

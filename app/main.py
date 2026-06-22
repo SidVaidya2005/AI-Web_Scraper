@@ -8,6 +8,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.api import health
 from app.config import get_settings
 from app.fetching.browser import BrowserManager
+from app.jobs.store import JobStore
 from app.logging import configure_logging
 
 
@@ -19,8 +20,9 @@ async def lifespan(app: FastAPI):
     # Shared Chromium owner: created here, but Chromium itself launches lazily on the
     # first render=true request, so HTTP-only runs never start a browser.
     app.state.browser_manager = BrowserManager(settings)
-    # Still wired in by their owning feature:
-    #   app.state.job_store  -> Feature 13 (in-memory JobStore)
+    # Single source of job state for the process; the runner (F14) drives it.
+    app.state.job_store = JobStore(settings=settings)
+    # Still wired in by its owning feature:
     #   app.state.scheduler  -> Feature 15 (bounded scheduler)
     try:
         yield

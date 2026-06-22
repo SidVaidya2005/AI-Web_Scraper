@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import app.__main__ as app_main
 from app.config import get_settings
 from app.fetching.browser import BrowserManager
+from app.jobs.store import JobStore
 from app.main import app
 
 
@@ -33,6 +34,13 @@ def test_lifespan_wires_browser_manager_without_launching_chromium() -> None:
         assert manager._browser is None  # lazy: never launched on an HTTP-only run
     # Exiting the context ran aclose() cleanly (a no-op since it never launched).
     assert app.state.browser_manager._browser is None
+
+
+def test_lifespan_wires_job_store() -> None:
+    # The runner (F14) reads app.state.job_store; the lifespan must expose it.
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/health").status_code == 200
+        assert isinstance(app.state.job_store, JobStore)
 
 
 def test_disallowed_host_rejected() -> None:

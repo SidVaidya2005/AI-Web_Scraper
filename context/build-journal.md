@@ -794,6 +794,82 @@ Approved plan: `~/.claude/plans/12-extraction-engine-curried-island.md`.
 
 ---
 
+## Phase 3 · Feature 14 — Async job runner  *(2026-06-23)*
+
+**Built:** `app/jobs/runner.py` (`async run_job(job_id, *, app_state)`, the
+`RunnerState` Protocol, and the best-effort `_terminalize` helper); lifespan wiring in
+`app/main.py` (`app.state.job_store = JobStore(settings=settings)`, F13-deferred);
+`tests/test_jobs_runner.py` (10 tests) + 1 new lifespan test in `tests/test_main.py`. No
+new dependencies; no new exception types. Approved plan:
+`~/.claude/plans/f14-async-job-vivid-harbor.md`.
+
+**Decisions** (architect session, developer-confirmed):
+- **`app_state` typed via a local `RunnerState` Protocol** (`job_store`, `browser_manager`,
+  `settings`) rather than `Any`. Satisfies the full-type-hints rule, documents exactly what
+  the runner reads off `app.state`, keeps the test's `SimpleNamespace` type-clean, and F15's
+  scheduler can reuse the same shape. (Static checkers can't prove the dynamic Starlette
+  `State` satisfies it, but it still documents + types the test double.)
+- **Known-error tuple = `(ProviderError, FetchError, ValidationError)`** — matches the
+  `code-standards.md` runner example and is forward-compatible. **Accepted deviation from
+  reachability:** the jsonschema `ValidationError` arm is currently **unreachable** because
+  the F12 engine already wraps schema-validation errors into `ProviderError`; including it
+  pulls `jsonschema.exceptions` into `app/jobs`. Developer chose to match house style over
+  trimming the dead branch.
+- **Self-guarding terminalization upholds "never raises" unconditionally.** Both `except`
+  arms route through one `_terminalize()` that swallows `JobStateError`, so the boundary
+  holds even when the job is already terminal/evicted (an F15 shutdown race) or `mark_running`
+  fails on a missing id. `JobStateError` is treated as internal/unknown (generic message +
+  `logger.exception`).
+- **Everything comes from `app_state`** (incl. `settings = app_state.settings`, already on
+  `app.state` from F03). Module-qualified imports (`fetch_service.fetch`, `cleaner.clean`,
+  `engine.extract`, `registry.get_provider`) give clean `monkeypatch.setattr` seams — the
+  same style as `test_fetch_service.py`.
+- **Provider built in the runner** via `registry.get_provider(settings,
+  override=job.request.provider)` and injected into `engine.extract` — realizes the F12
+  contract (engine selects no provider). The runner is the single place selection happens.
+- **`str(job.request.url)` coercion** — `ExtractRequest.url` is `HttpUrl`; the fetch path /
+  `url_guard` take `str` (`JobResponse.from_job` set the same precedent). A test pins that
+  `fetch_service.fetch` receives a `str`.
+
+**Gotchas:**
+- **The guard must wrap BOTH `except` arms, not just the unknown one.** The known-error arm
+  also calls `mark_error`, which can itself raise `JobStateError` (terminal/missing job) and
+  escape — so a single `_terminalize()` helper serves both arms.
+- **A plain `RuntimeError` is not a `ProviderError`/`FetchError`.** Both project errors
+  subclass `RuntimeError`, but the reverse isn't true, so an arbitrary `RuntimeError` falls
+  to `except Exception` → generic message. A test raises `RuntimeError("secret …")` and
+  asserts the job error is exactly `"internal error — see server logs"` (no `str(exc)` leak).
+- **`mark_running` on a terminal/missing job** raises `JobStateError` → `except Exception` →
+  `_terminalize` → `mark_error` raises again → swallowed; the original terminal state is
+  preserved (test pins a pre-`done` job stays `done` with its result).
+- **Transitive SDK/browser imports are fine.** Importing `app.providers.registry` pulls in
+  the `anthropic` SDK and `app.fetching.browser` pulls in `playwright`, but the runner imports
+  **neither directly** — the invariant is about *direct* imports (same precedent as `main.py`
+  importing `BrowserManager` and the engine importing `app.providers.base`).
+- **TDD red steps observed:** the runner suite first failed with `ModuleNotFoundError`
+  (no `app.jobs.runner`); the lifespan test first failed with `AttributeError: 'State' object
+  has no attribute 'job_store'`. Both went green after implementation. ruff `E501` wrapped two
+  test `store.create(...)` lines via `ruff format` (no logic change).
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 48 files formatted.
+- `uv run pytest -q` → **185 passed, 1 skipped** (174 prior + 10 runner + 1 lifespan), exit 0.
+  The skip is the Chromium-gated browser integration test; one pre-existing Starlette/httpx
+  TestClient deprecation warning, unrelated.
+- Confirmed by test: happy path → `done` with the result dict and `mode="http"`,
+  `started_at`/`finished_at` set, `error` None; `mode="browser"` propagates; `FetchError`
+  and its `SSRFError` subclass → `error` with the message verbatim; a registry `ProviderError`
+  → `error`; a real schema mismatch through the engine → `error` starting `"extraction did not
+  match schema:"`; an unknown `RuntimeError` → the generic message with no leak; `run_job`
+  never raises against an already-terminal job (state preserved) or a missing id; the URL is
+  passed as a `str` and the `provider` override is forwarded. Lifespan exposes
+  `app.state.job_store` as a `JobStore`.
+- Invariants held (grep-verified): `app/jobs/runner.py` imports no `httpx`/`playwright`/LLM
+  SDK and no `os`/env *directly*; all state mutation goes through `JobStore` methods; the
+  runner is the top-level error boundary and cannot raise.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's
