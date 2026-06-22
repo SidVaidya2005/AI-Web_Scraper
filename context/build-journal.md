@@ -402,6 +402,62 @@ was already in the stack); no new exception types.
 
 ---
 
+## Phase 1 · Feature 08 — HTML cleaning & content reduction  *(2026-06-22)*
+
+**Built:** `app/cleaning/cleaner.py` (`clean(html, *, settings) -> str`);
+`tests/test_cleaner.py` (7 tests). No new dependencies (selectolax was already in the
+stack and already used by `fetch_service.needs_render`); no new exception types. Closes
+Phase 1.
+
+**Decisions:**
+- **Signature is `clean(html, *, settings: Settings)`, not `clean(html, *, max_chars)`**
+  (architect session, developer-confirmed). The project's own docs split on this:
+  `build-plan.md` F08 and `library-docs.md` write `max_chars`; `code-standards.md`'s example
+  and the documented F14 runner call site (`content = clean(fetched.html, settings=settings)`)
+  write `settings`. Chose `settings` for consistency — every other pipeline function
+  (`http_fetcher.fetch`, `browser.render`, `fetch_service.fetch`) already takes `*, settings`,
+  and the canonical consumer (the F14 runner) calls it that way. Reads
+  `settings.max_content_chars` internally.
+- **Returns plain text, not cleaned HTML.** `tree.body.text(separator=" ", strip=True)` with a
+  fallback to `tree.text()` when there is no `<body>` (fragments / malformed input). The LLM
+  gets text; both doc examples return text.
+- **Synchronous, pure function.** No `async` — it is pure CPU (selectolax parse), no I/O,
+  matching both doc examples and the sibling `needs_render`. The architecture's
+  `run_in_executor` offload note is a future concern, not needed for v1. Same input → same output.
+- **Naive `text[:max_content_chars]` truncation, documented lossy.** Overflow is dropped;
+  token-aware budgeting / chunk-and-merge stays a Phase-5 follow-up (F23), not a silent TODO.
+- **Drop set is the *full* boilerplate set** `_DROP_SELECTOR = "script, style, nav, footer,
+  header, noscript, svg, iframe"` (a module constant). This is a **different** constant from
+  `fetch_service._DROP_SELECTOR` (`"script, style, noscript, template"`): the cleaner strips
+  all chrome to maximize signal, while `needs_render` only strips scripts to *measure* visible
+  text for SPA detection. Same name, different module, different value — intentional; not merged.
+- **Test file is `tests/test_cleaner.py`** (the project's actual test-per-module convention,
+  e.g. `test_url_guard.py`, `test_fetch_service.py`), not the coarse `tests/test_cleaning.py`
+  from the architecture tree — consistent with the F04 decision to deviate the same way.
+
+**Gotchas:**
+- **selectolax/lexbor auto-wraps fragments in a document**, so `tree.body` is rarely `None`
+  even for bare-fragment or empty-string input (empty string → an empty `<body>` → `""`). The
+  `else tree.text()` fallback is a safety net for genuinely bodyless trees rather than a
+  commonly hit branch; the fragment test asserts the **contract** (returns the text, never
+  raises) rather than which branch runs, to stay non-brittle against parser internals.
+- The drop happens **before** text extraction (`decompose()` then `.text()`) — extracting first
+  would leave script/style text in the output.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 32 files formatted.
+- `uv run pytest -q` → **112 passed** (105 prior + 7 new), exit 0 (one pre-existing
+  Starlette/httpx TestClient deprecation warning, unrelated).
+- Confirmed by test: every boilerplate marker (script/style/nav/header/footer/noscript/svg/
+  iframe) is absent from the output while real article content survives; output is truncated to
+  exactly `max_content_chars` when over the cap and returned intact when under; edge whitespace
+  is stripped; empty and whitespace-only HTML return `""` without raising; a bodyless fragment
+  still yields its text.
+- Invariants held: `app/cleaning/cleaner.py` imports only `selectolax` + `app.config` — no
+  `httpx`/`playwright`, no network, no job state, no LLM, no `os`/env access (settings injected).
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

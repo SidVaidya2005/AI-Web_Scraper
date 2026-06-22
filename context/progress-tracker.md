@@ -11,39 +11,43 @@ immediately know what is done, what is in progress, and what is next.
 
 ## Current Status
 
-**Phase:** Phase 1 — Fetch & Render
-**Last completed:** 07 Fetch strategy / render decision (2026-06-22)
-**Next:** 08 HTML cleaning & content reduction
+**Phase:** Phase 1 — Fetch & Render (complete)
+**Last completed:** 08 HTML cleaning & content reduction (2026-06-22)
+**Next:** 09 LLM provider interface (Phase 2 — AI Extraction)
 
 **Carry-over into next session:**
-- **The lifespan now owns the browser.** `app/main.py` wires
-  `app.state.browser_manager = BrowserManager(settings)` and `await ...aclose()` in the
-  shutdown `finally` (no-op if never launched). The **scheduler-drain-then-close** ordering
-  still arrives with F15 (the drain must run *before* `aclose()`). The F06 deferral is done.
-- **F08 builds `app/cleaning/cleaner.py`** `clean(html, *, settings)` (or `max_chars`):
-  selectolax — drop `script/style/nav/footer/header/svg/iframe`, then truncate to
-  `MAX_CONTENT_CHARS`. **Documented lossy** (naive `text[:cap]`); token-aware chunking is a
-  Phase-5 follow-up, not a silent TODO. Pure function: HTML in → trimmed text out — **no**
-  network, job state, or LLM. **`app/cleaning` must not import `httpx`/`playwright`.**
-- **`fetch_service.needs_render` already uses selectolax**, but it is a *separate*
-  responsibility (SPA-shell detection) from the cleaner (strip + cap) — don't merge them.
-  Its threshold is the module constant `_MIN_VISIBLE_TEXT_CHARS` (no env var).
-- **F07 render rules (now implemented):** matrix in `app/fetching/fetch_service.py`;
-  `_fetch_http` retries **only** `TransientFetchError` up to `FETCH_MAX_RETRIES` (SSRF/oversize
-  propagate, never retried); render runs only on `render=True` via lazy `browser_manager.get()`
-  (so `render=False` never launches Chromium); a rendered result is re-checked for 2xx+HTML.
-  **Playwright `TimeoutError` from render is left un-mapped — still deferred to F21.**
-- **Test seams:** fetch_service tests patch the `http_fetcher.fetch` / `browser.render`
-  module attributes + a `_FakeBrowserManager` whose `get()` records calls (asserts the browser
-  is never requested on `render=False`). HTTP-fetcher tests still use `httpx.MockTransport` +
-  the `url_guard._resolve` seam. All construct `Settings(_env_file=None, allow_private_hosts=…)`
-  so the dev shell can't bleed in; app-level tests pin `base_url="http://127.0.0.1"`.
+- **Phase 1 is done.** The fetch→clean half of the pipeline is built and green
+  (112 tests). Next is Phase 2: `app/providers/base.py` `LLMProvider` protocol +
+  `ProviderError` (F09), then the Anthropic provider (F10).
+- **F08 cleaner is built:** `app/cleaning/cleaner.py` `clean(html, *, settings) -> str`
+  — selectolax, drops `_DROP_SELECTOR = "script, style, nav, footer, header, noscript,
+  svg, iframe"`, extracts `tree.body.text(separator=" ", strip=True)` (falls back to
+  `tree.text()` when bodyless), truncates to `settings.max_content_chars`. **Pure & sync**
+  (no network/job-state/LLM; no `httpx`/`playwright`). Naive `text[:cap]` is **documented
+  lossy** — token-aware chunking stays a Phase-5 follow-up.
+- **Signature is `clean(html, *, settings)`, not `max_chars`** (architect decision): matches
+  the canonical F14 runner call site (`clean(fetched.html, settings=settings)`) and every
+  other pipeline fn. The F14 runner consumes the cleaner this way.
+- **`fetch_service.needs_render` vs the cleaner:** both use selectolax but are *separate*
+  responsibilities — `needs_render` (SPA-shell detection, smaller drop set
+  `script, style, noscript, template`, `_MIN_VISIBLE_TEXT_CHARS`) is NOT the cleaner (full
+  boilerplate strip + cap). Both modules carry a same-named `_DROP_SELECTOR` constant with
+  *different* values — intentional, don't merge.
+- **F07 render rules (implemented):** matrix in `app/fetching/fetch_service.py`; `_fetch_http`
+  retries **only** `TransientFetchError` up to `FETCH_MAX_RETRIES`; render only on
+  `render=True` via lazy `browser_manager.get()`. **Playwright `TimeoutError` from render is
+  still un-mapped — deferred to F21.** The lifespan wires `app.state.browser_manager` +
+  `aclose()`; the **scheduler-drain-then-close** ordering still arrives with F15.
+- **Test seams:** patch module attributes (`http_fetcher.fetch` / `browser.render`); all
+  tests build `Settings(_env_file=None, …)` so the dev shell can't bleed in; app-level tests
+  pin `base_url="http://127.0.0.1"`. Cleaner tests just feed HTML and assert trimmed text.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F07 — `app/fetching/fetch_service.py`,
-  `tests/test_fetch_service.py` (new); `app/main.py`, `tests/test_main.py` (modified). Still
-  pending from F06 — `app/fetching/browser.py`, `tests/test_browser.py`,
-  `tests/test_browser_integration.py` (new); `.github/workflows/ci.yml` (modified).
+- **Uncommitted (commit only when asked):** F08 — `app/cleaning/cleaner.py`,
+  `tests/test_cleaner.py` (new).
+- **OPEN — pending decision:** F08 not yet committed. Developer was asked "commit F08 now
+  or proceed to F09?" and the session ended before answering. Resolve this first next
+  session. (Reminder: per CLAUDE.md, commits never add a co-author.)
 
 ---
 
@@ -59,7 +63,7 @@ immediately know what is done, what is in progress, and what is next.
 - [x] 05 HTTP fetch (fast path)
 - [x] 06 Browser render (fallback)
 - [x] 07 Fetch strategy / render decision
-- [ ] 08 HTML cleaning & content reduction
+- [x] 08 HTML cleaning & content reduction
 
 ### Phase 2 — AI Extraction
 - [ ] 09 LLM provider interface
@@ -90,13 +94,6 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
-- **Feature 04 SSRF guard built (2026-06-22):** `app/fetching/url_guard.py` (`validate` /
-  `resolve_and_validate`) + `app/fetching/errors.py` (`FetchError`, `SSRFError(FetchError)`).
-  Both functions are **`async`** (`await loop.getaddrinfo` — never blocks the loop);
-  **validate-all/pin-first** (any blocked resolved IP rejects the URL, first vetted IP is
-  pinned); IPv4-mapped IPv6 unwrapped; `ALLOW_PRIVATE_HOSTS=true` disables only the IP
-  block (scheme allow-list always applies). The HTTP-pin / opt-in-render spec rationale is
-  in `architecture.md` and archived in `build-journal.md`. Full detail in `build-journal.md`.
 - **Feature 05 HTTP fetch built (2026-06-22):** `app/fetching/models.py` (`FetchResult`
   frozen dataclass + computed `status_ok`/`is_html`) + `app/fetching/http_fetcher.py`
   (`fetch(url, *, settings, transport=None)`): **`await`**s the async guard, **pins the
@@ -123,6 +120,13 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   visible-text threshold (`_MIN_VISIBLE_TEXT_CHARS`, script/style dropped first — no env var).
   **Lifespan now wires `app.state.browser_manager`** (+ `aclose()` on shutdown). Render-timeout
   → taxonomy mapping still deferred to F21. Full detail in `build-journal.md`.
+- **Feature 08 cleaner built (2026-06-22):** `app/cleaning/cleaner.py`
+  `clean(html, *, settings) -> str` — selectolax drops the full boilerplate set
+  (`script, style, nav, footer, header, noscript, svg, iframe`), extracts
+  `body.text(separator=" ", strip=True)` (falls back to `tree.text()` when bodyless), and
+  truncates to `settings.max_content_chars` (**documented lossy**; chunking is Phase-5).
+  **Pure & sync** — no network/job-state/LLM, no `httpx`/`playwright`. Signature takes
+  `settings` (not `max_chars`) to match the F14 runner call site. **Phase 1 complete.**
 - **Scheduler bounded by concurrency AND atomic admission** (15): `MAX_CONCURRENT_JOBS` semaphore + retained task refs + `try_reserve()` (synchronous check-and-increment, no `await` → no TOCTOU) capping in-flight+waiting at `MAX_QUEUED_JOBS`; over cap → `503`/`429`, no job created; `release()` on terminal / failed-create / failed-submit. Admission **closes first on shutdown** (`try_reserve()` → False), and a `submit()` that fails after reserve+create releases the slot **and** terminalizes the job (no `queued` zombie). Shutdown drains **before** the browser closes.
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
