@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 import app.__main__ as app_main
 from app.config import get_settings
+from app.fetching.browser import BrowserManager
 from app.main import app
 
 
@@ -20,6 +21,18 @@ def test_lifespan_starts_and_sets_settings_state() -> None:
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.get("/health").status_code == 200
         assert app.state.settings is get_settings()
+
+
+def test_lifespan_wires_browser_manager_without_launching_chromium() -> None:
+    # The BrowserManager is owned by the lifespan, but a request flow that never
+    # renders must not launch Chromium (the opt-in-render guarantee, app level).
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/health").status_code == 200
+        manager = app.state.browser_manager
+        assert isinstance(manager, BrowserManager)
+        assert manager._browser is None  # lazy: never launched on an HTTP-only run
+    # Exiting the context ran aclose() cleanly (a no-op since it never launched).
+    assert app.state.browser_manager._browser is None
 
 
 def test_disallowed_host_rejected() -> None:

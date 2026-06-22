@@ -330,6 +330,78 @@ new dependencies (`playwright` was already in the stack); no new exception types
 
 ---
 
+## Phase 1 · Feature 07 — Fetch strategy / render decision  *(2026-06-22)*
+
+**Built:** `app/fetching/fetch_service.py` (`fetch(url, *, browser_manager, settings,
+render=False) -> FetchResult`, `needs_render(html)`, helpers `_fetch_http` /
+`_render_and_check` / `_insufficient_message`); lifespan wiring in `app/main.py`
+(`app.state.browser_manager` + `aclose()` on shutdown); `tests/test_fetch_service.py`
+(23 tests) + 1 new lifespan test in `tests/test_main.py`. No new dependencies (selectolax
+was already in the stack); no new exception types.
+
+**Decisions:**
+- **`needs_render` = selectolax visible-text threshold** (architect-confirmed). Parse →
+  decompose `script, style, noscript, template` → measure `body` text → `True` when empty
+  or `< _MIN_VISIBLE_TEXT_CHARS` (200). Dropping script/style first is the whole point: a
+  raw-length check is fooled by a big inlined-JS SPA shell, but after stripping scripts that
+  shell has ~0 visible text. Threshold is a **module constant, not an env var** — keeps F07
+  off the settings contract (architect-confirmed). selectolax in `app/fetching/` is allowed
+  (the boundary rules only bar `httpx`/`playwright` from `cleaning`/`extraction`).
+- **F07 owns the bounded transient retry** (architect-confirmed; matches the F06 carry-over
+  note). `_fetch_http` loops `range(fetch_max_retries + 1)`, retrying **only**
+  `TransientFetchError`; `SSRFError`/oversize/too-many-redirects are not transient, so they
+  propagate on the first attempt. Render-failure retries stay out (F21).
+- **Render-timeout mapping stays deferred to F21.** `fetch_service` does not catch Playwright
+  `TimeoutError` from `render` — it propagates un-mapped (a test pins this so the deferral is
+  explicit). Only `FetchError`/`SSRFError` from render, and the rendered `FetchResult`'s
+  status/content-type, are acted on here.
+- **No re-gate after render.** A successful render is the final attempt: any
+  `status_ok and is_html` rendered result is returned as-is (no second `needs_render`); a
+  rendered non-2xx/non-HTML result becomes a `FetchError`.
+- **Module-qualified seams over aliased imports.** `fetch_service` imports the modules
+  (`from app.fetching import browser, http_fetcher`) and calls `http_fetcher.fetch(...)` /
+  `browser.render(...)`. This avoids shadowing the `render: bool` param and gives tests clean
+  `monkeypatch.setattr(http_fetcher, "fetch", …)` / `(browser, "render", …)` seams — the same
+  style as the existing `httpx.MockTransport` / `url_guard._resolve` seams.
+- **`settings` added to the signature** (build-plan omitted it, but `http_fetcher`/`render`
+  need it; `architecture.md`'s own snippet includes it).
+
+**Gotchas:**
+- **`SSRFError` is a `FetchError`, not a `TransientFetchError`** — so `except TransientFetchError`
+  in both `_fetch_http` and `fetch` correctly lets a blocked URL propagate without a retry and
+  without ever reaching the render branch. A test asserts the HTTP fetcher is called exactly
+  once for an SSRF rejection even with `render=True`.
+- **`assert last_exc is not None` after the retry loop** documents that the loop always runs at
+  least once (`fetch_max_retries >= 0`), satisfying the type checker without an unreachable
+  branch. The selected ruff rules don't flag possibly-unbound, but the assert reads clearer.
+- **Test FetchResults need `> 200` chars of real text to count as "good".** `_RICH_HTML` uses
+  `"real words here " * 40` (~640 chars); the SPA fixture is an empty `<div id="root">` plus a
+  5000-char `<script>` that collapses to ~0 text after the decompose step.
+- **ruff reformatted `tests/test_fetch_service.py`** (collapsed a couple of wrapped calls) —
+  applied `ruff format`, no logic change.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 30 files formatted.
+- `uv run pytest -q` → **105 passed** (81 prior + 24 new), exit 0 (one pre-existing
+  Starlette/httpx TestClient deprecation warning, unrelated).
+- Confirmed by test, per the fallback matrix × render flag: 2xx-HTML-with-text → `mode="http"`
+  and the browser is **never requested** (both flags); SPA shell → render on `render=True`
+  (`mode="browser"`), `FetchError` with the "retry with render=true" hint and **no browser**
+  on `render=False`; non-HTML and non-2xx follow the matrix per flag (error carries the
+  content-type / HTTP status); transient retried exactly `fetch_max_retries + 1` times, a
+  recovering retry returns the HTTP result, exhausted → render (`render=True`) or
+  `TransientFetchError` (`render=False`); `SSRFError` propagates without retry or render;
+  rendered non-2xx/non-HTML → `FetchError`; render `TimeoutError` propagates un-mapped; render
+  `SSRFError` propagates; `needs_render` flags empty/SPA-shell and passes content-rich HTML.
+  App level: an HTTP-only lifespan cycle leaves `app.state.browser_manager._browser is None`
+  (Chromium never launched) and `aclose()` runs cleanly.
+- Invariants held: `playwright` still imported only inside `app/fetching/browser.py` (main.py
+  imports the `BrowserManager` class, not playwright); no env access outside `app/config.py`;
+  `fetch_service` touches no job state; the browser is launched lazily and only on the render
+  path.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

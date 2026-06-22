@@ -12,45 +12,38 @@ immediately know what is done, what is in progress, and what is next.
 ## Current Status
 
 **Phase:** Phase 1 — Fetch & Render
-**Last completed:** 06 Browser render (fallback) (2026-06-22)
-**Next:** 07 Fetch strategy / render decision
+**Last completed:** 07 Fetch strategy / render decision (2026-06-22)
+**Next:** 08 HTML cleaning & content reduction
 
 **Carry-over into next session:**
-- **F06 deferred the lifespan wiring to F07 (a planning decision).** `BrowserManager` +
-  `render()` exist in `app/fetching/browser.py`, but `app.state.browser_manager` is **not**
-  wired — `app/main.py` is untouched except a one-word comment pointing the wiring at F07.
-  **F07 must:** add `app.state.browser_manager = BrowserManager(get_settings())` in the
-  lifespan and `await app.state.browser_manager.aclose()` on shutdown (a no-op if never
-  launched; the scheduler-drain-then-close ordering arrives with F15). F07 also gives us the
-  app-level "HTTP-only never launches Chromium" check that F06 only asserts at the unit level.
-- **F07 builds `fetch_service.fetch(url, *, browser_manager, render=False)` + `needs_render()`**
-  implementing the architecture **fallback matrix**. Call `render()` only in the `render=True`
-  branch, after fetching the live browser lazily via `await browser_manager.get()` — never
-  launch Chromium on the default (`render=False`) path.
-- **`render()` does NOT map a Playwright `goto` timeout into the taxonomy** — it lets the
-  Playwright `TimeoutError` propagate (only over-cap → `FetchError`, blocked → `SSRFError`,
-  non-2xx → returned `FetchResult`). Wrapping render timeouts into a readable job error is
-  **deferred to F21** (timeouts/retries). F07's matrix retries the HTTP path's
-  `TransientFetchError`, not render failures.
-- **Real-browser tests skip gracefully when Chromium is absent.** `tests/test_browser.py`
-  is fully mocked (no binary); `tests/test_browser_integration.py` launches a real Chromium
-  against a loopback `ThreadingHTTPServer` fixture and `pytest.skip`s if the binary is
-  missing. **CI now runs `playwright install --with-deps chromium`** so it runs there;
-  locally run `uv run playwright install chromium` once (the binary IS installed in this
-  workspace now — the integration test passed for real).
-- **The integration test uses `allow_private_hosts=True`** — the documented SSRF escape hatch
-  is required so the guard permits the `127.0.0.1` fixture. Production default stays `False`.
-- **Mock the Playwright surface with small fakes, not a real browser**, mirroring the
-  `httpx.MockTransport` / `url_guard._resolve` seam style; `BrowserManager` is driven by
-  patching `app.fetching.browser.async_playwright`.
-- **Tests inject `httpx.MockTransport`** on `http_fetcher.fetch`; DNS goes through the
-  `url_guard._resolve` seam. Tests pin `allow_private_hosts` explicitly so the dev shell
-  can't bleed in. App-level tests pin `base_url="http://127.0.0.1"` (TrustedHost rejects the
-  default `testserver` Host). `ALLOWED_HOSTS` needs `NoDecode` + before-validator for CSV.
+- **The lifespan now owns the browser.** `app/main.py` wires
+  `app.state.browser_manager = BrowserManager(settings)` and `await ...aclose()` in the
+  shutdown `finally` (no-op if never launched). The **scheduler-drain-then-close** ordering
+  still arrives with F15 (the drain must run *before* `aclose()`). The F06 deferral is done.
+- **F08 builds `app/cleaning/cleaner.py`** `clean(html, *, settings)` (or `max_chars`):
+  selectolax — drop `script/style/nav/footer/header/svg/iframe`, then truncate to
+  `MAX_CONTENT_CHARS`. **Documented lossy** (naive `text[:cap]`); token-aware chunking is a
+  Phase-5 follow-up, not a silent TODO. Pure function: HTML in → trimmed text out — **no**
+  network, job state, or LLM. **`app/cleaning` must not import `httpx`/`playwright`.**
+- **`fetch_service.needs_render` already uses selectolax**, but it is a *separate*
+  responsibility (SPA-shell detection) from the cleaner (strip + cap) — don't merge them.
+  Its threshold is the module constant `_MIN_VISIBLE_TEXT_CHARS` (no env var).
+- **F07 render rules (now implemented):** matrix in `app/fetching/fetch_service.py`;
+  `_fetch_http` retries **only** `TransientFetchError` up to `FETCH_MAX_RETRIES` (SSRF/oversize
+  propagate, never retried); render runs only on `render=True` via lazy `browser_manager.get()`
+  (so `render=False` never launches Chromium); a rendered result is re-checked for 2xx+HTML.
+  **Playwright `TimeoutError` from render is left un-mapped — still deferred to F21.**
+- **Test seams:** fetch_service tests patch the `http_fetcher.fetch` / `browser.render`
+  module attributes + a `_FakeBrowserManager` whose `get()` records calls (asserts the browser
+  is never requested on `render=False`). HTTP-fetcher tests still use `httpx.MockTransport` +
+  the `url_guard._resolve` seam. All construct `Settings(_env_file=None, allow_private_hosts=…)`
+  so the dev shell can't bleed in; app-level tests pin `base_url="http://127.0.0.1"`.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** `app/fetching/browser.py`, `tests/test_browser.py`,
-  `tests/test_browser_integration.py` (new); `.github/workflows/ci.yml`, `app/main.py` (modified).
+- **Uncommitted (commit only when asked):** F07 — `app/fetching/fetch_service.py`,
+  `tests/test_fetch_service.py` (new); `app/main.py`, `tests/test_main.py` (modified). Still
+  pending from F06 — `app/fetching/browser.py`, `tests/test_browser.py`,
+  `tests/test_browser_integration.py` (new); `.github/workflows/ci.yml` (modified).
 
 ---
 
@@ -65,7 +58,7 @@ immediately know what is done, what is in progress, and what is next.
 - [x] 04 URL safety & SSRF guard
 - [x] 05 HTTP fetch (fast path)
 - [x] 06 Browser render (fallback)
-- [ ] 07 Fetch strategy / render decision
+- [x] 07 Fetch strategy / render decision
 - [ ] 08 HTML cleaning & content reduction
 
 ### Phase 2 — AI Extraction
@@ -121,10 +114,18 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   real-Chromium integration test (`tests/test_browser_integration.py`); CI now installs
   Chromium. **Lifespan wiring deferred to F07** (decision); render-timeout→taxonomy mapping
   deferred to F21. Full detail in `build-journal.md`.
+- **Feature 07 fetch strategy built (2026-06-22):** `app/fetching/fetch_service.py`
+  (`fetch(url, *, browser_manager, settings, render=False)` + `needs_render`) implements the
+  architecture **fallback matrix**. `_fetch_http` retries **only** `TransientFetchError` up to
+  `FETCH_MAX_RETRIES` (SSRF/oversize propagate, never retried); render runs only on
+  `render=True` via lazy `browser_manager.get()` (so `render=False` **never launches
+  Chromium**); the rendered result is re-checked for 2xx+HTML. `needs_render` = selectolax
+  visible-text threshold (`_MIN_VISIBLE_TEXT_CHARS`, script/style dropped first — no env var).
+  **Lifespan now wires `app.state.browser_manager`** (+ `aclose()` on shutdown). Render-timeout
+  → taxonomy mapping still deferred to F21. Full detail in `build-journal.md`.
 - **Scheduler bounded by concurrency AND atomic admission** (15): `MAX_CONCURRENT_JOBS` semaphore + retained task refs + `try_reserve()` (synchronous check-and-increment, no `await` → no TOCTOU) capping in-flight+waiting at `MAX_QUEUED_JOBS`; over cap → `503`/`429`, no job created; `release()` on terminal / failed-create / failed-submit. Admission **closes first on shutdown** (`try_reserve()` → False), and a `submit()` that fails after reserve+create releases the slot **and** terminalizes the job (no `queued` zombie). Shutdown drains **before** the browser closes.
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
 - **The fetch contract returns a `FetchResult`** (html, mode, status, content_type, final_url) so the fallback matrix can branch — not bare HTML. The browser builds it from the **real** `page.goto()` response + `page.url`, never hardcoded `200`/`text/html`/original URL.
-- **Feature 03 app skeleton (2026-06-22):** `create_app()` + **minimal deferred lifespan** (settings + logging only; `job_store`/`browser_manager`/`scheduler` deferred to F13/F06/F15 as a comment, no stubs); `TrustedHostMiddleware(ALLOWED_HOSTS)` is the live v1 Host allow-list; `python -m app` honors `HOST`/`PORT`; `SettingsDep` added to `config.py`; `/health` is liveness-only with an inline `HealthResponse`. Full detail in `build-journal.md`.
 - **Single process / single Uvicorn worker**; `HOST`/`PORT` honored only via the `python -m app` (`app/__main__.py`) entry point.
 - **Host-allowlist + Origin checks ship in v1** (cheap DNS-rebinding/CSRF baseline); token-CSRF + auth remain prerequisites for any remote bind.
