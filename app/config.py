@@ -3,6 +3,7 @@
 from functools import lru_cache
 from typing import Annotated, Literal
 
+from fastapi import Depends
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -98,3 +99,9 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return the process-wide cached Settings instance (FastAPI dependency)."""
     return Settings()
+
+
+# FastAPI dependency alias: inject the cached Settings into a handler with
+# `settings: SettingsDep`. Lives here (the settings' home) rather than in each
+# router so there is one canonical way to obtain Settings in a request scope.
+SettingsDep = Annotated[Settings, Depends(get_settings)]

@@ -108,6 +108,51 @@ cached `get_settings()`); `tests/test_config.py` (7 tests).
 
 ---
 
+## Phase 0 · Feature 03 — App skeleton + health endpoint  *(2026-06-22)*
+
+**Built:** `app/main.py` (`create_app()` factory + `lifespan` + module-level `app`);
+`app/logging.py` (`configure_logging`); `app/api/health.py` (`GET /health`);
+`app/__main__.py` (`python -m app` entry point); `SettingsDep` added to
+`app/config.py`; `tests/test_main.py` (4 tests).
+
+**Decisions:**
+- **Minimal deferred lifespan.** Lifespan only loads settings, configures logging,
+  and stashes `app.state.settings`; `job_store` (F13) / `browser_manager` (F06) /
+  `scheduler` (F15) are left as a documented comment, **not** stub modules — same
+  scope discipline as F02 deferring `SettingsDep`. The comment also records the
+  drain-before-close shutdown ordering those will need.
+- **`SettingsDep` lives in `app/config.py`** (`Annotated[Settings, Depends(get_settings)]`)
+  even though `/health` is settings-free — config is its canonical home and F03 is the
+  first FastAPI-aware feature. This pulls `from fastapi import Depends` into `config.py`
+  (acceptable: it reads no env, so the env-only invariant holds).
+- **Logging targets the `app` logger namespace** (children `app.<area>` inherit a
+  single handler/level), configured once in `create_app()`, idempotent (no duplicate
+  handlers across repeated `create_app()` in tests), `propagate=False`.
+- **`/health` is liveness-only** with an inline `HealthResponse` `response_model`,
+  kept out of `app/models.py` (reserved for shared extract/job models).
+- **`TrustedHostMiddleware` from `starlette.middleware.trustedhost`** with
+  `settings.allowed_hosts` — the live v1 DNS-rebinding Host allow-list.
+- **`__main__` uses the import-string form** `uvicorn.run("app.main:app", …)`; no
+  `--reload` (dev reload stays the documented `uvicorn app.main:app --reload` command).
+
+**Gotchas:**
+- **TestClient's default Host is `testserver`**, which `TrustedHostMiddleware` rejects
+  (400). App-level tests pin `base_url="http://127.0.0.1"` (allow-listed); a separate
+  test asserts a disallowed Host (`evil.com`) → 400, proving the middleware is live.
+- **Testing `__main__` without binding a socket:** `monkeypatch` `uvicorn.run` and assert
+  it received `host=settings.host` / `port=settings.port`, compared to the cached
+  `get_settings()` so the assertion is env-independent.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 18 files formatted.
+- `uv run pytest -q` → **12 passed** (8 prior + 4 new), exit 0.
+- Lifespan boots/shuts cleanly via the TestClient context; `/health` → `200 {"status":"ok"}`;
+  disallowed Host → `400`; `__main__` forwards `settings.host`/`port` to uvicorn.
+- One benign warning (Starlette deprecation re: `httpx` in TestClient) — a dep-version
+  note from the environment, not introduced by this feature.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's
@@ -121,3 +166,7 @@ Key Decisions near ~10. The authoritative versions live in `architecture.md` /
   form-encoded handler, not the JSON API route.
 - **Provider errors are generic & user-safe** (full detail logged, never interpolated into
   `ProviderError`); `MAX_CONTENT_CHARS` is a lossy char cap (chunking is a Phase-5 follow-up).
+- **Schema conformance = provider `strict` + post-validation** (pruned 2026-06-22):
+  forcing the tool only guarantees it is *called*; the returned dict is re-validated
+  against the request `output_schema` in `app/extraction/` regardless. (Authoritative
+  in `architecture.md` / `library-docs.md`.)
