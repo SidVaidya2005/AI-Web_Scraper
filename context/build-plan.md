@@ -123,6 +123,13 @@ Validate output against the request's JSON Schema.
 - `app/extraction/schemas.py`: enforce **root `type: object`** + the supported subset (reject otherwise with 422); normalize for strict mode (`additionalProperties: false`, `required`); validate the LLM dict with a `Draft202012Validator(..., format_checker=FORMAT_CHECKER)` — **not** plain `jsonschema.validate` (which ignores `format`); no `create_model`. `app/models.py` `ExtractRequest` (`url`, `prompt`, `output_schema`, `provider`, `render: bool = False`) / `JobResponse`.
 - Verify: a sample schema validates good/bad payloads; a root-non-object or out-of-subset schema is rejected at the boundary; a bad `format` value (e.g. malformed email) fails validation; a list extraction under a property key is accepted as the object envelope.
 
+> **Built 2026-06-23 (deviation noted):** `app/models.py` ships **`ExtractRequest` only** —
+> `JobResponse` is deferred to F13/F16, where `Job`/`JobStatus` exist (avoids rework on
+> `from_job()` / the status enum). Subset enforcement is a **targeted denylist** (+ hard
+> root-`type:object`), and the submit-time gate is wired as a Pydantic `@field_validator` on
+> `ExtractRequest.output_schema` (raises `InvalidSchemaError(ValueError)` → 422 in F16). See
+> `build-journal.md` → Feature 11.
+
 ### 12 Extraction engine
 
 Orchestrate cleaned content + prompt/schema → validated structured result.

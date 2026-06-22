@@ -576,6 +576,83 @@ lockfile); no new env vars (all settings existed from F02); no changes to `base.
 
 ---
 
+## Phase 2 · Feature 11 — Extraction schemas  *(2026-06-23)*
+
+**Built:** `app/extraction/schemas.py` (`validate_request_schema`, `normalize_for_strict`,
+`validate_output`, `InvalidSchemaError(ValueError)`, plus the private structure-aware
+`_iter_subschemas` traversal); `app/models.py` (`ExtractRequest` only — `JobResponse`
+deferred); `tests/test_extraction_schemas.py` (16 tests) + `tests/test_models.py` (6 tests).
+No new dependencies (`jsonschema[format]` already in the stack); no SDK touched. Approved
+plan: `~/.claude/plans/11-extraction-schemas-kind-naur.md`.
+
+**Decisions** (architect session, developer-confirmed):
+- **Submit-time gate = Pydantic `@field_validator`** on `ExtractRequest.output_schema`
+  delegating to `validate_request_schema`. The gate raises `InvalidSchemaError`, a subclass
+  of **`ValueError`** — Pydantic v2 catches a `ValueError` raised inside a validator and folds
+  it into its own `ValidationError`, which FastAPI renders as **422** (F16). Both the JSON API
+  and the dashboard-form path get the gate for free because both build `ExtractRequest`.
+  Accepted cost: a one-way `app/models.py → app/extraction/schemas.py` import (no cycle —
+  `schemas.py` imports nothing first-party).
+- **Subset enforcement = targeted denylist** (not a full allowlist). Reject a fixed set of
+  out-of-subset keywords (`oneOf`, `allOf`, `not`, `if`/`then`/`else`, `contains`,
+  `prefixItems`, `patternProperties`, `dependentSchemas`, `dependentRequired`, `propertyNames`,
+  `unevaluatedProperties`, `unevaluatedItems`) plus a hard root-`type:object` rule; tolerate
+  anything else `check_schema` accepts (incl. numeric/length bounds — validation-only, not
+  provider-guaranteed).
+- **`JobResponse` deferred to F13/F16** — it needs `Job`/`JobStatus`, which land with the job
+  store in F13. Deliberate deviation from the build-plan's "ExtractRequest + JobResponse"
+  wording (annotated in `build-plan.md`), so `from_job()` and the status enum land together
+  with no rework.
+- **Validate output against the ORIGINAL schema, not the normalized one.** The user's schema
+  is their contract; `normalize_for_strict` (all-required + `additionalProperties:false`) is
+  only the provider's strict-tool input. A strict LLM output trivially satisfies the looser
+  original, so validating against the original is both correct and what `architecture.md` /
+  `library-docs.md` specify.
+- **F11 lets the output `ValidationError` propagate unwrapped** — F12's engine wraps it into a
+  `ProviderError` (`"extraction did not match schema: …"`). F11 owns the mechanism; the
+  HTTP/job-error mapping is F12's/F16's.
+- **`provider` field stays `str | None`** (matches the canonical `library-docs.md` model);
+  unknown providers are handled by the registry's `ProviderError` (F10), not constrained here.
+
+**Gotchas:**
+- **Property names vs keywords (the denylist trap).** A naive "reject if any denylisted key
+  appears anywhere" would wrongly reject `{"type":"object","properties":{"not":{...}}}` — there
+  `not` is a *field name*, not the keyword. Fix: `_iter_subschemas` descends **only** through
+  schema positions — single-subschema keys (`items`, `not`, `if`, …), list-of-subschema keys
+  (`anyOf`/`allOf`/`oneOf`/`prefixItems`), and map-of-subschema keys (`properties`/`$defs`/
+  `definitions`/`patternProperties`/`dependentSchemas`, whose **values** are subschemas and
+  **keys** are names). Data-valued keywords (`enum`, `const`, `default`) are never traversed.
+  Two tests pin this (a property named `not`/`if` accepted; `enum`/`const` strings not flagged).
+- **`FORMAT_CHECKER` is required for `format`.** Plain `jsonschema.validate` ignores `format`;
+  the test for a malformed `email` only fails because `validate_output` builds
+  `Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)`. Confirmed
+  `email` is an active checker in the installed `jsonschema[format]` (alongside `date-time`,
+  `uri`, `uuid`, …).
+- **Normalize must not mutate the request schema.** The original is kept (on the Job) for
+  output validation, so `normalize_for_strict` `copy.deepcopy`s first; a test asserts the input
+  is unchanged. Nodes are collected (`list(_iter_subschemas(clone))`) before mutating to avoid
+  dict-changed-size-during-iteration.
+- **ruff reformatted `tests/test_extraction_schemas.py`** (collapsed two wrapped dict literals) —
+  applied `ruff format`, no logic change.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 40 files formatted.
+- `uv run pytest -q` → **149 passed, 1 skipped** (127 prior + 22 new), exit 0. The skip is the
+  Chromium-gated browser integration test (absent binary locally); one pre-existing
+  Starlette/httpx TestClient deprecation warning, unrelated.
+- Confirmed by test: a valid subset schema is accepted and validates good/bad payloads;
+  root-non-object, root-missing-type, malformed (`check_schema`), and top-level + nested
+  out-of-subset keywords are all rejected — both directly and through `ExtractRequest`
+  (Pydantic `ValidationError`); a property named `not`/`if` and `enum`/`const` keyword-strings
+  are accepted; `normalize_for_strict` fills nested object nodes under `properties`/`items`/
+  `anyOf`/`$defs` without mutating the original and leaves leaf/propertyless nodes alone; a
+  malformed `email` fails (`FORMAT_CHECKER` on); a `{"items": [...]}` envelope validates.
+- Invariants held: `app/extraction/schemas.py` imports only stdlib + `jsonschema` — no
+  `httpx`/`playwright`/SDK, no network/job-state, no `os`/env; no `create_model`; the only new
+  import edge is `app/models.py → app/extraction/schemas.py` (no cycle).
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's
