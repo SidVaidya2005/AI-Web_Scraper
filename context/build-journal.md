@@ -716,6 +716,84 @@ Approved plan: `~/.claude/plans/12-extraction-engine-curried-island.md`.
 
 ---
 
+## Phase 3 · Feature 13 — In-memory job store  *(2026-06-23)*
+
+**Built:** `app/jobs/models.py` (`Job` Pydantic model + `is_terminal`; `JobStatus(StrEnum)`);
+`app/jobs/store.py` (`JobStore` + `JobStateError`); `JobResponse` added to `app/models.py`;
+`tests/test_jobs_models.py` (3 tests) + `tests/test_jobs_store.py` (14 tests) + 2 new
+`JobResponse.from_job` tests in `tests/test_models.py`. No new dependencies (stdlib `uuid`/
+`datetime`/`asyncio` + Pydantic). Opens Phase 3. Approved plan:
+`~/.claude/plans/13-in-memory-job-vivid-parrot.md`.
+
+**Decisions** (architect session, developer-confirmed):
+- **Transitions are enforced** (developer's call). `mark_running` requires `queued`;
+  `mark_done`/`mark_error` require **non-terminal**; a missing id or a terminal-job mutation
+  raises a new `JobStateError(RuntimeError)`. Protects the "terminal states never change"
+  invariant. `mark_error` is allowed from `queued` *or* `running` (the F16 shutdown path marks
+  a just-created `queued` job `error`).
+- **`JobResponse` echoes the request** (developer's call): `job_id, status, url, prompt, mode,
+  result, error, created_at, started_at, finished_at`, built by `from_job(job)`, so an API
+  client polling `GET /jobs/{id}` sees which job without a second lookup. The dashboard (F18)
+  reads full `Job`s from `list()` directly, so it doesn't depend on this echo.
+- **Import-cycle break (the structural gotcha).** `app/jobs/models.py` imports `ExtractRequest`
+  from `app/models` at runtime (real `Job.request` field), so `app/models.py` must **not**
+  import from `app/jobs` at runtime — otherwise a circular import. Resolved by keeping
+  `JobResponse` in its documented home (`app/models.py`) but importing `Job` **only under
+  `TYPE_CHECKING`** (string annotation on `from_job`) and typing `JobResponse.status` as a plain
+  **`str`** (fed `job.status.value`). Both import orders now resolve (verified). Trade-off: the
+  response model's OpenAPI shows `status` as a string, not an enum — accepted (a `Literal` would
+  duplicate the four values).
+- **Lazy eviction, no background task.** `_evict()` runs under the lock at the top of `create()`
+  and `list()` — a TTL sweep (terminal jobs whose `finished_at` is older than `JOB_TTL_SECONDS`)
+  then an oldest-**terminal** sweep down to `MAX_JOBS`. `queued`/`running` are never touched. No
+  fire-and-forget sweeper (respects the bounded-scheduler invariant). `MAX_JOBS` is therefore a
+  **soft** cap: an all-non-terminal overflow is left over the cap (F15 admission bounds that).
+- **Newest-first via `reversed(self._jobs.values())`**, not a `created_at` sort — dict insertion
+  order == creation order, so rapid same-microsecond creations stay deterministic without
+  depending on clock resolution.
+- **Live references, not defensive copies.** `get`/`list`/`mark_*` return the stored `Job`
+  objects (single-process, callers read-only); the runner reads `job.request` off
+  `mark_running`'s return. All mutation goes through `mark_*` under the lock; `Job` is a mutable
+  Pydantic model mutated in place.
+- **Lifespan wiring deferred to F14** (the runner is the first `app.state.job_store` consumer) —
+  `app/main.py` untouched, matching the F05/F06→F07 build-in-isolation precedent.
+- **Test files** are `tests/test_jobs_models.py` / `tests/test_jobs_store.py` (test-per-module
+  convention, e.g. `test_fetch_models.py`), not the architecture tree's coarse `test_jobs.py`.
+
+**Gotchas:**
+- **`JobStatus` had to be `StrEnum`, not `(str, Enum)`.** ruff `UP042` (in the selected `UP`
+  ruleset) flags `class JobStatus(str, Enum)` and demands `enum.StrEnum`. The `library-docs.md`
+  Pydantic snippet writes `(str, Enum)` illustratively, but ruff is the project's style authority
+  (code-standards), so the real enum is `StrEnum`. `.value` is used explicitly everywhere, so the
+  `str()` behaviour difference is moot; identity checks (`status is JobStatus.queued`) still hold.
+- **TTL tested without sleeping.** Because `get`/`mark_*` return live refs and the store holds the
+  same object, a test marks a job terminal then sets `job.finished_at` into the past and triggers
+  a sweep via `list()` — deterministic, no `time.sleep`.
+- **`MAX_JOBS` test must respect the settings relationship.** `Settings` enforces
+  `max_concurrent_jobs <= max_queued_jobs <= max_jobs`, so the small-cap test sets
+  `max_concurrent_jobs=1, max_queued_jobs=1, max_jobs=2` (not just `max_jobs=2`, which would fail
+  construction). Eviction runs at the *top* of `create`, so the cap is enforced on the *next*
+  `create()`/`list()` after the overflow insert — the test triggers it with a trailing `list()`.
+- **Several docstrings/asserts tripped E501.** Shortened in place; no `noqa`.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 46 files formatted.
+- `uv run pytest -q` → **174 passed, 1 skipped** (155 prior + 19 new), exit 0. The skip is the
+  Chromium-gated browser integration test; one pre-existing Starlette/httpx TestClient deprecation
+  warning, unrelated.
+- Confirmed by test: `create()` → `queued` Job with a uuid4 id, tz-aware UTC `created_at`, null
+  started/finished, request echoed; `get` round-trips and `get(unknown)→None`; `mark_*` set status
+  + the right timestamp; illegal/terminal/missing transitions raise `JobStateError`; `mark_error`
+  works from both `queued` and `running`; `list()` is newest-first; TTL drops only terminal jobs
+  (running/queued survive an aged timestamp); `MAX_JOBS` drops oldest terminal but keeps
+  non-terminal over the cap; `JobResponse.from_job` maps every field (`url` as str, `status` as a
+  plain str value); 20 concurrent `create()`s all land distinct (lock holds).
+- Invariants held (grep-verified): `app/jobs/` imports no `httpx`/`playwright`/LLM SDK and no
+  `os`/env; `app/main.py` untouched; both import directions resolve (no runtime cycle); the only
+  new cross-module edge is `app/jobs/models.py → app/models.py`.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

@@ -11,43 +11,43 @@ immediately know what is done, what is in progress, and what is next.
 
 ## Current Status
 
-**Phase:** Phase 2 — AI Extraction (complete) → Phase 3 next
-**Last completed:** 12 Extraction engine (2026-06-23)
-**Next:** 13 In-memory job store (Phase 3 — Jobs & API)
+**Phase:** Phase 3 — Jobs & API (in progress)
+**Last completed:** 13 In-memory job store (2026-06-23)
+**Next:** 14 Async job runner (Phase 3 — Jobs & API)
 
 **Carry-over into next session:**
-- **F12 built:** `app/extraction/engine.py` `extract(content, *, prompt, schema, provider:
-  LLMProvider)` — `normalize_for_strict(schema)` → `provider.extract(...)` →
-  `validate_output(raw, schema=schema)` against the **ORIGINAL** schema, wrapping the jsonschema
-  `ValidationError` into `ProviderError("extraction did not match schema: …")`. **Provider is
-  INJECTED** (engine reads no settings, never calls the registry) — the F14 runner builds it via
-  `registry.get_provider(settings, override=request.provider)`. Documented deviation from
-  `architecture.md`'s data-flow (annotated in `build-plan.md` F12). Suite **155 passing, 1
-  skipped** (149 prior + 6 new). Approved plan: `~/.claude/plans/12-extraction-engine-curried-island.md`.
-  **Phase 2 closed.**
-- **Next is F13 (In-memory job store):** `app/jobs/models.py` (`Job`, `JobStatus`) +
-  `app/jobs/store.py` `JobStore` (`create`/`get`/`list`/`mark_running`/`mark_done`/`mark_error`,
-  `asyncio.Lock`, TTL eviction of **terminal** jobs from `finished_at`, `MAX_JOBS` cap,
-  newest-first listing). This is also where **`JobResponse` lands in `app/models.py`** (deferred
-  from F11 — it needs `Job`/`JobStatus`).
-- **F12 → F14 contract (for when the runner is built):** the runner builds the provider via
-  `registry.get_provider(settings, override=job.request.provider)` and calls
-  `engine.extract(content, prompt=…, schema=job.request.output_schema, provider=provider)`. A
-  `ProviderError` (schema mismatch, provider/registry failure) propagates to the runner, the
-  error boundary, which records it as a job error.
-- **Locked extraction invariants:** provider gets the strict-**normalized** schema; output is
-  validated against the **original**; `schema=None` skips validation; engine adds no
-  untrusted-content framing (provider owns the system prompt + `<page_content>` delimiter).
+- **F13 built:** `app/jobs/models.py` (`Job` Pydantic model + `is_terminal`; `JobStatus(StrEnum)`)
+  and `app/jobs/store.py` (`JobStore`: `create`/`get`/`list`/`mark_running`/`mark_done`/`mark_error`
+  under an `asyncio.Lock`; **lazy** `_evict` — TTL from `finished_at` + oldest-**terminal**
+  `MAX_JOBS` sweep, never touching `queued`/`running`; newest-first via `reversed(insertion)`;
+  `JobStateError` on illegal/missing/terminal transitions). **`JobResponse` landed in
+  `app/models.py`** (echoes `url`+`prompt`; `status` typed **`str`**; `Job` imported under
+  `TYPE_CHECKING` to break the `app/models ↔ app/jobs/models` cycle). Suite **174 passing, 1
+  skipped** (155 prior + 19 new). Approved plan: `~/.claude/plans/13-in-memory-job-vivid-parrot.md`.
+- **Next is F14 (Async job runner):** `app/jobs/runner.py` `run_job(job_id, *, app_state)`:
+  `mark_running` → `fetch_service.fetch(url, browser_manager=…, settings=…, render=job.request.render)`
+  → `clean(html, settings=…)` → `engine.extract(content, prompt=…, schema=job.request.output_schema,
+  provider=registry.get_provider(settings, override=job.request.provider))` → `mark_done(result, mode)`.
+  Known errors (`ProviderError`/`FetchError`/`ValidationError`) → `mark_error(str(exc))`; unknown →
+  generic message (traceback logged); **never raises**. **F14 also wires `app.state.job_store` into
+  the lifespan** (deferred from F13 per the F06→F07 build-in-isolation precedent).
+- **F13 → F14 contract:** the runner mutates state only through the store methods; mark signatures
+  are `mark_done(job_id, *, result, mode)` and `mark_error(job_id, *, error)`, both returning the Job.
+- **Locked store invariants:** only **terminal** jobs are evicted (TTL from `finished_at`; `MAX_JOBS`
+  drops oldest terminal); `queued`/`running` are **never** evicted; transitions are enforced
+  (`mark_running` only from `queued`; `mark_done`/`mark_error` only from non-terminal; `mark_error`
+  allowed from `queued` for the shutdown path); `get`/`list`/`mark_*` return **live** Job refs —
+  mutate only via `mark_*` under the lock.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F12 code — `app/extraction/engine.py`,
-  `tests/test_extraction_engine.py` (both new); plus these context docs (`progress-tracker.md`,
-  `build-journal.md`, `build-plan.md`). HEAD is `a4f3208 2.11-Extraction-schemas`; tree was clean
-  before F12. (Reminder: per CLAUDE.md, commits never add a co-author.)
-- **OPEN — pending decision (resolve first next session):** commit F12 now, or proceed straight
-  to F13? Developer was asked at session end and hadn't answered. F12 is complete and verified
-  (155 passing / 1 skipped, ruff clean) — purely the commit-vs-continue call. (HEAD is still
-  `a4f3208 2.11-Extraction-schemas`.)
+- **Uncommitted (commit only when asked):** F13 — `app/jobs/models.py`, `app/jobs/store.py`,
+  `tests/test_jobs_models.py`, `tests/test_jobs_store.py` (new); `app/models.py`,
+  `tests/test_models.py` (modified) — **plus still-uncommitted F12** (`app/extraction/engine.py`,
+  `tests/test_extraction_engine.py`) and these context docs. HEAD is `a4f3208 2.11-Extraction-schemas`.
+  (Reminder: per CLAUDE.md, commits never add a co-author.)
+- **OPEN — pending decision:** F12 **and** F13 are both complete and verified (174 passing / 1
+  skipped, ruff clean) but uncommitted; HEAD is still `a4f3208 2.11-Extraction-schemas`. Decide the
+  commit strategy (e.g. F12 then F13 as two commits) before/at the next session.
 
 ---
 
@@ -72,7 +72,7 @@ immediately know what is done, what is in progress, and what is next.
 - [x] 12 Extraction engine
 
 ### Phase 3 — Jobs & API
-- [ ] 13 In-memory job store
+- [x] 13 In-memory job store
 - [ ] 14 Async job runner
 - [ ] 15 Job scheduler — concurrency, backpressure & shutdown
 - [ ] 16 Extract & jobs API endpoints
@@ -94,6 +94,15 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 13 In-memory job store built (2026-06-23):** `app/jobs/models.py` (`Job` +
+  `is_terminal`; `JobStatus(StrEnum)`) and `app/jobs/store.py` `JobStore` — `asyncio.Lock`-guarded
+  `dict`, **lazy** `_evict` (TTL from `finished_at` + oldest-**terminal** `MAX_JOBS` sweep;
+  `queued`/`running` never evicted), newest-first via `reversed(insertion)`, and **enforced
+  transitions** (`mark_running` from `queued`; `mark_done`/`mark_error` non-terminal only; missing
+  id / terminal mutation → `JobStateError`). `JobResponse` landed in `app/models.py` (echoes
+  `url`+`prompt`; `status: str`; `Job` under `TYPE_CHECKING` to sever the `models ↔ jobs.models`
+  cycle). Lifespan wiring deferred to F14. **174 passing, 1 skipped.** (F07 fetch-strategy decision
+  pruned → `build-journal.md`.)
 - **Feature 12 Extraction engine built (2026-06-23):** `app/extraction/engine.py`
   `extract(content, *, prompt, schema, provider: LLMProvider)` — `normalize_for_strict(schema)`
   → `provider.extract(...)` → `validate_output` against the **original** schema, wrapping the
@@ -124,15 +133,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   F22), empty key → `ProviderError` at selection. `LLM_TIMEOUT_SECONDS` wired into the client now;
   retries → F21. Test seam = injected fake client (SDK never hit). `anthropic` imported only here.
   **127 passing.** (F06 browser-render decision pruned → `build-journal.md`.)
-- **Feature 07 fetch strategy built (2026-06-22):** `app/fetching/fetch_service.py`
-  (`fetch(url, *, browser_manager, settings, render=False)` + `needs_render`) implements the
-  architecture **fallback matrix**. `_fetch_http` retries **only** `TransientFetchError` up to
-  `FETCH_MAX_RETRIES` (SSRF/oversize propagate, never retried); render runs only on
-  `render=True` via lazy `browser_manager.get()` (so `render=False` **never launches
-  Chromium**); the rendered result is re-checked for 2xx+HTML. `needs_render` = selectolax
-  visible-text threshold (`_MIN_VISIBLE_TEXT_CHARS`, script/style dropped first — no env var).
-  **Lifespan now wires `app.state.browser_manager`** (+ `aclose()` on shutdown). Render-timeout
-  → taxonomy mapping still deferred to F21. Full detail in `build-journal.md`.
 - **Scheduler bounded by concurrency AND atomic admission** (15): `MAX_CONCURRENT_JOBS` semaphore + retained task refs + `try_reserve()` (synchronous check-and-increment, no `await` → no TOCTOU) capping in-flight+waiting at `MAX_QUEUED_JOBS`; over cap → `503`/`429`, no job created; `release()` on terminal / failed-create / failed-submit. Admission **closes first on shutdown** (`try_reserve()` → False), and a `submit()` that fails after reserve+create releases the slot **and** terminalizes the job (no `queued` zombie). Shutdown drains **before** the browser closes.
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
