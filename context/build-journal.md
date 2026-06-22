@@ -458,6 +458,54 @@ Phase 1.
 
 ---
 
+## Phase 2 · Feature 09 — LLM provider interface  *(2026-06-22)*
+
+**Built:** `app/providers/base.py` (`ProviderError(RuntimeError)` + a `@runtime_checkable`
+`LLMProvider` Protocol with one async, keyword-only `extract(*, content, prompt,
+json_schema) -> dict[str, Any]`); `tests/test_providers.py` (4 tests). No new dependencies
+(stdlib `typing` only); no SDK touched. Opens Phase 2.
+
+**Decisions:**
+- **`Protocol`, not `ABC`** — concrete providers (F10 Anthropic, F22 OpenAI, test fakes)
+  conform structurally, never by inheritance. Matches the canonical `architecture.md` snippet
+  and the build-plan wording ("protocol").
+- **`@runtime_checkable`** (architect session, developer-confirmed) so the test has a concrete
+  runtime assertion: `isinstance(fake, LLMProvider)` plus a non-conforming `object()` failing
+  it. Documented caveat: `@runtime_checkable` `isinstance` only verifies *method presence*, not
+  signature/async-ness — the real conformance proof is the awaited `extract()` returning a
+  `dict`, backed by static type-checking. Both are exercised.
+- **Scope held to the contract.** `base.py` carries **only** the Protocol + `ProviderError` —
+  no registry, no Anthropic/OpenAI code, no `__init__` re-export (no barrel modules, per
+  `code-standards.md`). Those arrive in F10. `app/providers/__init__.py` left as its docstring.
+- **`ProviderError(RuntimeError)`** with a one-line docstring — mirrors the established
+  error-class house style in `app/fetching/errors.py` (`FetchError` et al.).
+- **`extract` signature is fixed by the docs** — keyword-only, async, returns the object
+  envelope `dict[str, Any]`; no timeout / provider-selection param here (those are F10/F21).
+- **Test file is `tests/test_providers.py`** (test-per-module convention, consistent with the
+  F04/F08 deviations from the architecture tree's coarse `test_extraction.py`).
+
+**Gotchas:**
+- None of note — pure-stdlib interface feature. The Protocol method body is `...` (no
+  implementation), so there is nothing to mock or seam here; the SDK seam work lands in F10.
+- The async test needs no explicit marker — `pytest-asyncio` runs in `auto` mode (set in F01).
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 34 files formatted.
+- `uv run pytest -q` → **116 passed** (112 prior + 4 new), exit 0 (one pre-existing
+  Starlette/httpx TestClient deprecation warning, unrelated).
+- Confirmed by test: a structurally-conforming fake is `isinstance(..., LLMProvider)`; a bare
+  `object()` is **not**; `extract(...)` awaits to a `dict`; `ProviderError` is a `RuntimeError`
+  subclass and is raisable/catchable with its message intact.
+- Invariants held: no `anthropic`/`openai` import anywhere (this feature adds none); `base.py`
+  imports only stdlib `typing`; no env/`os` access outside `app/config.py`; no registry or
+  concrete provider introduced (scope held to the interface).
+
+**Bookkeeping note:** the prior "F08 not yet committed" OPEN item in the tracker was **stale** —
+git history shows F08 landed as commit `27097ed 1.8-HTML-cleaning-&-content-reduction`. Only F09
+is uncommitted going into the next session.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

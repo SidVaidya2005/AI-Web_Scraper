@@ -11,43 +11,43 @@ immediately know what is done, what is in progress, and what is next.
 
 ## Current Status
 
-**Phase:** Phase 1 — Fetch & Render (complete)
-**Last completed:** 08 HTML cleaning & content reduction (2026-06-22)
-**Next:** 09 LLM provider interface (Phase 2 — AI Extraction)
+**Phase:** Phase 2 — AI Extraction (in progress)
+**Last completed:** 09 LLM provider interface (2026-06-22)
+**Next:** 10 Anthropic provider (Phase 2 — AI Extraction)
 
 **Carry-over into next session:**
-- **Phase 1 is done.** The fetch→clean half of the pipeline is built and green
-  (112 tests). Next is Phase 2: `app/providers/base.py` `LLMProvider` protocol +
-  `ProviderError` (F09), then the Anthropic provider (F10).
-- **F08 cleaner is built:** `app/cleaning/cleaner.py` `clean(html, *, settings) -> str`
-  — selectolax, drops `_DROP_SELECTOR = "script, style, nav, footer, header, noscript,
-  svg, iframe"`, extracts `tree.body.text(separator=" ", strip=True)` (falls back to
-  `tree.text()` when bodyless), truncates to `settings.max_content_chars`. **Pure & sync**
-  (no network/job-state/LLM; no `httpx`/`playwright`). Naive `text[:cap]` is **documented
-  lossy** — token-aware chunking stays a Phase-5 follow-up.
-- **Signature is `clean(html, *, settings)`, not `max_chars`** (architect decision): matches
-  the canonical F14 runner call site (`clean(fetched.html, settings=settings)`) and every
-  other pipeline fn. The F14 runner consumes the cleaner this way.
-- **`fetch_service.needs_render` vs the cleaner:** both use selectolax but are *separate*
-  responsibilities — `needs_render` (SPA-shell detection, smaller drop set
-  `script, style, noscript, template`, `_MIN_VISIBLE_TEXT_CHARS`) is NOT the cleaner (full
-  boilerplate strip + cap). Both modules carry a same-named `_DROP_SELECTOR` constant with
-  *different* values — intentional, don't merge.
-- **F07 render rules (implemented):** matrix in `app/fetching/fetch_service.py`; `_fetch_http`
-  retries **only** `TransientFetchError` up to `FETCH_MAX_RETRIES`; render only on
-  `render=True` via lazy `browser_manager.get()`. **Playwright `TimeoutError` from render is
-  still un-mapped — deferred to F21.** The lifespan wires `app.state.browser_manager` +
-  `aclose()`; the **scheduler-drain-then-close** ordering still arrives with F15.
-- **Test seams:** patch module attributes (`http_fetcher.fetch` / `browser.render`); all
-  tests build `Settings(_env_file=None, …)` so the dev shell can't bleed in; app-level tests
-  pin `base_url="http://127.0.0.1"`. Cleaner tests just feed HTML and assert trimmed text.
+- **Phase 2 has started.** The provider *contract* is now in place (F09); next is the
+  first concrete provider — `app/providers/anthropic_provider.py` (F10) via `AsyncAnthropic`,
+  forced tool-use, plus `app/providers/registry.py`.
+- **F09 contract is built:** `app/providers/base.py` exposes exactly two names —
+  `ProviderError(RuntimeError)` and a `@runtime_checkable` `LLMProvider` Protocol with one
+  async, keyword-only method `extract(*, content, prompt, json_schema) -> dict[str, Any]`.
+  Interface-only: **no SDK import, no registry, no concrete provider** (those are F10). Import
+  from the real path (`from app.providers.base import LLMProvider, ProviderError`) — no barrel
+  re-export in `__init__.py`.
+- **`@runtime_checkable` chosen** (developer decision) so the test asserts
+  `isinstance(fake, LLMProvider)` plus a non-conforming `object()` failing it; the awaited
+  `extract()` returning a `dict` is the real conformance proof (isinstance only checks method
+  presence, not signature).
+- **F10 will be the first feature to import an SDK** (`anthropic`) — keep it **only** inside
+  `app/providers/`. Use the **`claude-api` skill** for current model ids before coding
+  (`ANTHROPIC_MODEL` default `claude-sonnet-4-6`; id always from settings, never literal),
+  and Context7 `/anthropics/anthropic-sdk-python` for the SDK shape. Anthropic key is read as
+  `SecretStr` in `Settings` (F02) — provider reads it via `.get_secret_value()`.
+- **Test seams / isolation (unchanged):** test-per-module (`tests/test_providers.py`); tests
+  build `Settings(_env_file=None, …)` so the dev shell can't bleed in; provider SDK calls get
+  **mocked** in F10 (no live LLM in the suite).
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F08 — `app/cleaning/cleaner.py`,
-  `tests/test_cleaner.py` (new).
-- **OPEN — pending decision:** F08 not yet committed. Developer was asked "commit F08 now
-  or proceed to F09?" and the session ended before answering. Resolve this first next
-  session. (Reminder: per CLAUDE.md, commits never add a co-author.)
+- **Uncommitted (commit only when asked):** F09 — `app/providers/base.py`,
+  `tests/test_providers.py` (both new, untracked).
+- **Prior OPEN item resolved:** F08 *was* committed (`27097ed 1.8-HTML-cleaning…`); the old
+  "F08 not yet committed" note was stale. (Reminder: per CLAUDE.md, commits never add a
+  co-author.)
+- **OPEN — pending decision (resolve first next session):** commit F09 now, or proceed
+  straight to F10? Developer was asked at session end and hadn't answered. The approved F09
+  plan lives at `~/.claude/plans/09-llm-provider-playful-breeze.md` (already fully realized in
+  code — reference only).
 
 ---
 
@@ -66,7 +66,7 @@ immediately know what is done, what is in progress, and what is next.
 - [x] 08 HTML cleaning & content reduction
 
 ### Phase 2 — AI Extraction
-- [ ] 09 LLM provider interface
+- [x] 09 LLM provider interface
 - [ ] 10 Anthropic provider
 - [ ] 11 Extraction schemas
 - [ ] 12 Extraction engine
@@ -94,14 +94,13 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
-- **Feature 05 HTTP fetch built (2026-06-22):** `app/fetching/models.py` (`FetchResult`
-  frozen dataclass + computed `status_ok`/`is_html`) + `app/fetching/http_fetcher.py`
-  (`fetch(url, *, settings, transport=None)`): **`await`**s the async guard, **pins the
-  vetted IP** (IP-in-URL + `Host` header + `extensions={"sni_hostname": host}`), manual
-  per-hop redirect re-pin (≤ `max_redirects`; relative `Location` via `urljoin` on the
-  *logical* URL), **hard streamed byte cap** before buffering. New `TransientFetchError`
-  for timeout/connection (retryable); non-2xx is **returned**, not raised. Tests inject
-  `httpx.MockTransport` via the `transport` seam. Full detail in `build-journal.md`.
+- **Feature 09 provider interface built (2026-06-22):** `app/providers/base.py` —
+  `ProviderError(RuntimeError)` + a `@runtime_checkable` `LLMProvider` Protocol with one
+  async, keyword-only `extract(*, content, prompt, json_schema) -> dict[str, Any]` (object
+  envelope; raises `ProviderError`). Interface-only — **no SDK / registry / concrete
+  provider** (F10); import from the real path, no `__init__` barrel. `tests/test_providers.py`
+  asserts `isinstance(fake, LLMProvider)`, a non-conformer fails it, and `extract()` awaits to
+  a `dict`. **Phase 2 begun.** (F05 HTTP-fetch decision pruned → `build-journal.md`.)
 - **Feature 06 browser render built (2026-06-22):** `app/fetching/browser.py` —
   `BrowserManager` (lazy double-checked Chromium launch; `aclose()` no-op if never launched)
   + `render(url, *, browser, settings) -> FetchResult` (`await`-ed guard route on every
