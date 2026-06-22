@@ -257,6 +257,79 @@ dependencies — `httpx` was already in the stack.
 
 ---
 
+## Phase 1 · Feature 06 — Browser render (fallback)  *(2026-06-22)*
+
+**Built:** `app/fetching/browser.py` (`BrowserManager` + `render(url, *, browser,
+settings) -> FetchResult`); `tests/test_browser.py` (14 mock-based unit tests);
+`tests/test_browser_integration.py` (1 gated real-Chromium test); a
+`playwright install --with-deps chromium` step added to `.github/workflows/ci.yml`. No
+new dependencies (`playwright` was already in the stack); no new exception types.
+
+**Decisions:**
+- **Test strategy = hybrid, CI runs real** (architect decision). All of *our* logic
+  (lazy launch, guard routing, WS block, byte caps, real-metadata `FetchResult`) is
+  covered by fully-mocked unit tests with no browser, mirroring the existing
+  `httpx.MockTransport` / `url_guard._resolve` seam style. One real-Chromium integration
+  test proves *post-JS content actually renders* against a loopback
+  `ThreadingHTTPServer` fixture, and a **real** lazy launch via `BrowserManager.get()`.
+  CI installs Chromium so it runs there; locally it `pytest.skip`s if the binary is
+  absent (suite still green everywhere). F01 had deliberately deferred the Chromium CI
+  install to this feature.
+- **Lifespan wiring deferred to F07** (architect decision). `app/main.py` is untouched
+  apart from a one-word comment pointing the `app.state.browser_manager` wiring at F07.
+  Rationale: build/test the modules in isolation here; wire them when F07's
+  `fetch_service` is their first real consumer. The app-level "HTTP-only never launches
+  Chromium" assertion therefore moves to F07; F06 asserts laziness at the
+  `BrowserManager` unit level instead.
+- **`render()` uses `url_guard.validate`, not `resolve_and_validate`** — the browser
+  can't pin an IP, so only rejection-on-failure is needed (documented residual
+  DNS-rebinding risk on this path, per the architecture invariant).
+- **No render-timeout taxonomy mapping in F06.** `render()` lets a Playwright `goto`
+  `TimeoutError` propagate (over-cap → `FetchError`, blocked → `SSRFError`, non-2xx →
+  *returned* `FetchResult`). Wrapping render timeouts into a readable, non-leaky job
+  error belongs to F21 (timeouts/retries) — kept out of scope here to honor the plan.
+- **Best-effort byte cap** = cumulative `content-length` budget (via
+  `context.on("response", …)`) + a post-render `page.content()` size backstop; the HTTP
+  fast path keeps the *hard* guarantee.
+
+**Gotchas:**
+- **Chromium not installed by default.** Playwright 1.60 package + `route_web_socket`
+  were present, but no browser binary and no CI install step. Added
+  `uv run playwright install chromium` locally (the integration test then passed for
+  real, not skipped) and `--with-deps` to CI for the runner's OS libraries.
+- **Ruff split the aliased import.** `from playwright.async_api import TimeoutError as
+  PlaywrightTimeoutError` is isort-sorted into its own `from` block by `ruff check
+  --fix` — expected, left as-is.
+- **A breadcrumb comment in `app/main.py` had to change.** It said
+  `browser_manager -> Feature 06`; since wiring is deferred, it now reads `Feature 07`.
+  The longer first wording tripped **E501 (92 > 88)** — shortened to `(wire the F06
+  BrowserManager)`. (Yes, `app/main.py` was touched — only this comment.)
+- **Mocking the budget callback:** the fake `Page.goto` fires the registered
+  `context.on("response", …)` callback with fake `content-length` responses so the
+  cumulative budget can be exercised deterministically without a browser.
+- **API shapes confirmed via Context7** (`/websites/playwright_dev_python`):
+  `await context.route_web_socket(pattern, handler)` and `await ws.close(...)` before
+  writing code, per CLAUDE.md authority order.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 28 files
+  formatted.
+- `uv run pytest -q` → **81 passed** (66 prior + 14 mock + 1 integration), exit 0 (one
+  pre-existing Starlette/httpx TestClient deprecation warning, unrelated). The
+  integration test ran for real (`PASSED`, not `SKIPPED`) — confirmed via `-v`.
+- Confirmed by test: lazy launch exactly once under 8 concurrent `get()`; `aclose()`
+  no-op when never launched + idempotent + stops the driver when launched; launch
+  failure stops the driver and leaves `_browser=None` (retryable); `render()` builds
+  real status/content-type/final_url with `mode="browser"`; non-2xx returned not raised;
+  blocked top URL raises before any context; route guard aborts blocked / continues
+  allowed; all WebSockets closed; `service_workers="block"` set; both byte-cap paths
+  raise `FetchError`; context always closed (incl. when `goto` raises); settle timeout
+  swallowed; real Chromium renders JS-injected content on a loopback fixture.
+- Invariants held: `playwright` imported only in `app/fetching/`; no env access outside
+  `app/config.py`; `app/main.py` carries no browser logic (wiring deferred to F07).
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

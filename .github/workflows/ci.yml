@@ -26,5 +26,10 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check .
 
+      # Browser-render tests (Feature 06) need a real Chromium; --with-deps pulls
+      # the OS libraries Chromium requires on the runner.
+      - name: Install Playwright Chromium
+        run: uv run playwright install --with-deps chromium
+
       - name: Tests
         run: uv run pytest

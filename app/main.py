@@ -17,7 +17,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     # Long-lived state is wired in by its owning feature:
     #   app.state.job_store        -> Feature 13 (in-memory JobStore)
-    #   app.state.browser_manager  -> Feature 06 (lazy shared Chromium)
+    #   app.state.browser_manager  -> Feature 07 (wire the F06 BrowserManager)
     #   app.state.scheduler        -> Feature 15 (bounded scheduler)
     # Shutdown order will matter then: drain the scheduler BEFORE closing the
     # browser (a no-op if it was never launched).
