@@ -12,42 +12,45 @@ immediately know what is done, what is in progress, and what is next.
 ## Current Status
 
 **Phase:** Phase 2 — AI Extraction (in progress)
-**Last completed:** 09 LLM provider interface (2026-06-22)
-**Next:** 10 Anthropic provider (Phase 2 — AI Extraction)
+**Last completed:** 10 Anthropic provider (2026-06-22)
+**Next:** 11 Extraction schemas (Phase 2 — AI Extraction)
 
 **Carry-over into next session:**
-- **Phase 2 has started.** The provider *contract* is now in place (F09); next is the
-  first concrete provider — `app/providers/anthropic_provider.py` (F10) via `AsyncAnthropic`,
-  forced tool-use, plus `app/providers/registry.py`.
-- **F09 contract is built:** `app/providers/base.py` exposes exactly two names —
-  `ProviderError(RuntimeError)` and a `@runtime_checkable` `LLMProvider` Protocol with one
-  async, keyword-only method `extract(*, content, prompt, json_schema) -> dict[str, Any]`.
-  Interface-only: **no SDK import, no registry, no concrete provider** (those are F10). Import
-  from the real path (`from app.providers.base import LLMProvider, ProviderError`) — no barrel
-  re-export in `__init__.py`.
-- **`@runtime_checkable` chosen** (developer decision) so the test asserts
-  `isinstance(fake, LLMProvider)` plus a non-conforming `object()` failing it; the awaited
-  `extract()` returning a `dict` is the real conformance proof (isinstance only checks method
-  presence, not signature).
-- **F10 will be the first feature to import an SDK** (`anthropic`) — keep it **only** inside
-  `app/providers/`. Use the **`claude-api` skill** for current model ids before coding
-  (`ANTHROPIC_MODEL` default `claude-sonnet-4-6`; id always from settings, never literal),
-  and Context7 `/anthropics/anthropic-sdk-python` for the SDK shape. Anthropic key is read as
-  `SecretStr` in `Settings` (F02) — provider reads it via `.get_secret_value()`.
-- **Test seams / isolation (unchanged):** test-per-module (`tests/test_providers.py`); tests
-  build `Settings(_env_file=None, …)` so the dev shell can't bleed in; provider SDK calls get
-  **mocked** in F10 (no live LLM in the suite).
+- **F10 built:** `app/providers/anthropic_provider.py` (`AnthropicProvider`) +
+  `app/providers/registry.py` (`get_provider(settings, *, override=None)`). First feature to
+  import an SDK — `from anthropic import AsyncAnthropic`, confined to that one file. Suite at
+  **127 passing** (116 prior + 11 new). Approved plan:
+  `~/.claude/plans/feature-10-anthropic-declarative-feather.md`.
+- **Next is F11 (Extraction schemas):** `app/extraction/schemas.py` — enforce root
+  `type: object` + the supported subset (reject otherwise → 422), **own strict-mode
+  normalization** (`additionalProperties:false`, `required`), and validate the LLM dict with
+  `Draft202012Validator(..., format_checker=FORMAT_CHECKER)` (not plain `jsonschema.validate`).
+  Plus `app/models.py` `ExtractRequest`/`JobResponse`. **F10 deliberately deferred normalization
+  to F11** — the F12 engine will normalize the schema *before* calling `provider.extract(...)`.
+- **F10 provider contract for F12 to wire:** `provider.extract(*, content, prompt, json_schema)`
+  sets `strict: true` when `json_schema is not None` and passes the schema **through unchanged**
+  (no normalization in the provider). Registry resolves `override or settings.llm_provider`;
+  only `"anthropic"` wired — `"openai"`/unknown → `ProviderError` (F22 adds openai). Empty
+  `ANTHROPIC_API_KEY` → `ProviderError` at selection (fail fast). `LLM_TIMEOUT_SECONDS` is
+  wired into the client now; retries/timeout→job-error taxonomy stay F21.
+- **Provider construction:** `AnthropicProvider(*, api_key, model, timeout, client=None)` —
+  takes plain values (registry unwraps `SecretStr`), `client` is the test seam (inject a fake;
+  defaults to real `AsyncAnthropic`). `max_tokens=4096` module constant; no `thinking` config.
+  Registry constructs per-call (no caching) — provider/client caching is a noted F21+ follow-up.
+- **Test seams / isolation:** `tests/test_providers.py` mocks the SDK via an injected fake
+  client (no live LLM); `Settings(_env_file=None, anthropic_api_key="test-key", …)` (init
+  kwargs outrank env, so pinning is authoritative).
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F09 — `app/providers/base.py`,
-  `tests/test_providers.py` (both new, untracked).
-- **Prior OPEN item resolved:** F08 *was* committed (`27097ed 1.8-HTML-cleaning…`); the old
-  "F08 not yet committed" note was stale. (Reminder: per CLAUDE.md, commits never add a
-  co-author.)
-- **OPEN — pending decision (resolve first next session):** commit F09 now, or proceed
-  straight to F10? Developer was asked at session end and hadn't answered. The approved F09
-  plan lives at `~/.claude/plans/09-llm-provider-playful-breeze.md` (already fully realized in
-  code — reference only).
+- **Uncommitted (commit only when asked):** F10 code — `app/providers/anthropic_provider.py`,
+  `app/providers/registry.py` (new); `tests/test_providers.py` (modified); plus these context
+  docs (`progress-tracker.md`, `build-journal.md`). (Reminder: per CLAUDE.md, commits never add
+  a co-author.)
+- **OPEN — pending decision (resolve first next session):** commit F10 now, or proceed straight
+  to F11? Developer was asked at session end and hadn't answered. F10 is complete and verified
+  (127 passing, ruff clean) — this is purely the commit-vs-continue call.
+- **Prior OPEN item resolved:** F09 *was* committed (`a296780 2.9-LLM-provider-interface`); the
+  "commit F09 now or proceed?" question is moot — it's committed and the tree was clean.
 
 ---
 
@@ -67,7 +70,7 @@ immediately know what is done, what is in progress, and what is next.
 
 ### Phase 2 — AI Extraction
 - [x] 09 LLM provider interface
-- [ ] 10 Anthropic provider
+- [x] 10 Anthropic provider
 - [ ] 11 Extraction schemas
 - [ ] 12 Extraction engine
 
@@ -94,6 +97,17 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 10 Anthropic provider + registry built (2026-06-22):**
+  `app/providers/anthropic_provider.py` (`AnthropicProvider`) does forced tool-use on
+  `AsyncAnthropic` (tool `emit_extraction`, `tool_choice` forcing it, untrusted-content system
+  prompt + `<page_content>` delimiter, `max_tokens=4096`); model from settings; SDK errors →
+  generic `ProviderError` (full detail logged, never `str(exc)`). **Sets `strict: true` when a
+  schema is present and passes it through unchanged — strict normalization is deferred to F11.**
+  `app/providers/registry.py` `get_provider(settings, *, override=None)` resolves
+  `override or settings.llm_provider`; only `"anthropic"` wired (`"openai"`/unknown → `ProviderError`,
+  F22), empty key → `ProviderError` at selection. `LLM_TIMEOUT_SECONDS` wired into the client now;
+  retries → F21. Test seam = injected fake client (SDK never hit). `anthropic` imported only here.
+  **127 passing.** (F06 browser-render decision pruned → `build-journal.md`.)
 - **Feature 09 provider interface built (2026-06-22):** `app/providers/base.py` —
   `ProviderError(RuntimeError)` + a `@runtime_checkable` `LLMProvider` Protocol with one
   async, keyword-only `extract(*, content, prompt, json_schema) -> dict[str, Any]` (object
@@ -101,15 +115,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   provider** (F10); import from the real path, no `__init__` barrel. `tests/test_providers.py`
   asserts `isinstance(fake, LLMProvider)`, a non-conformer fails it, and `extract()` awaits to
   a `dict`. **Phase 2 begun.** (F05 HTTP-fetch decision pruned → `build-journal.md`.)
-- **Feature 06 browser render built (2026-06-22):** `app/fetching/browser.py` —
-  `BrowserManager` (lazy double-checked Chromium launch; `aclose()` no-op if never launched)
-  + `render(url, *, browser, settings) -> FetchResult` (`await`-ed guard route on every
-  request, `service_workers="block"`, `route_web_socket` closes all WS, content-length budget
-  + post-render backstop, **real** `goto`/`page.url` metadata, `mode="browser"`). **Test
-  strategy = hybrid:** fully-mocked unit tests (`tests/test_browser.py`) + one gated
-  real-Chromium integration test (`tests/test_browser_integration.py`); CI now installs
-  Chromium. **Lifespan wiring deferred to F07** (decision); render-timeout→taxonomy mapping
-  deferred to F21. Full detail in `build-journal.md`.
 - **Feature 07 fetch strategy built (2026-06-22):** `app/fetching/fetch_service.py`
   (`fetch(url, *, browser_manager, settings, render=False)` + `needs_render`) implements the
   architecture **fallback matrix**. `_fetch_http` retries **only** `TransientFetchError` up to

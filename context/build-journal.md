@@ -506,6 +506,76 @@ is uncommitted going into the next session.
 
 ---
 
+## Phase 2 · Feature 10 — Anthropic provider  *(2026-06-22)*
+
+**Built:** `app/providers/anthropic_provider.py` (`AnthropicProvider`); `app/providers/registry.py`
+(`get_provider`); extended `tests/test_providers.py` (+11 tests). First feature to import an LLM
+SDK (`from anthropic import AsyncAnthropic`). No new dependencies (`anthropic` already in the
+lockfile); no new env vars (all settings existed from F02); no changes to `base.py`/`config.py`.
+
+**Decisions** (architect session, developer-confirmed — plan
+`~/.claude/plans/feature-10-anthropic-declarative-feather.md`):
+- **Strict normalization deferred to F11.** The provider sets `tool["strict"] = True` whenever
+  `json_schema is not None` and passes the schema through **unchanged** — no
+  `additionalProperties:false`/`required` normalization here. The two context docs conflicted
+  (build-plan F11 lists normalization as F11's job; architecture/library-docs call it a
+  "provider-side normalizer"); resolved in favour of build-plan's split to keep F10 thin. F11's
+  `extraction/schemas.py` owns normalization, and the F12 engine normalizes before calling the
+  provider. The latent "strict on an un-normalized schema would 400" is harmless: the suite mocks
+  the SDK and F11 lands before the real API is ever called.
+- **Registry takes `override` now; `ProviderError` for openai/unknown.**
+  `get_provider(settings, *, override=None)` → `name = override or settings.llm_provider`; only
+  `"anthropic"` wired. The override seam exists now (F12 passes `request.provider`); F22 adds the
+  `"openai"` branch. Empty `ANTHROPIC_API_KEY` → `ProviderError("ANTHROPIC_API_KEY not configured")`
+  at selection (config deliberately doesn't validate key presence — F02 decision).
+- **`LLM_TIMEOUT_SECONDS` wired into the client now** (`AsyncAnthropic(api_key=, timeout=)`) — a
+  one-line constructor arg that belongs with the client; F21 still owns retries and the
+  timeout→job-error taxonomy.
+- **Provider takes plain values, not `Settings`** — `AnthropicProvider(*, api_key, model, timeout,
+  client=None)`. The registry is the only place that reads `Settings` and unwraps the `SecretStr`
+  (`.get_secret_value()`), preserving env-only-in-config and making the provider trivially testable.
+- **Test seam = injected client** (mirrors `http_fetcher`'s `transport` seam): optional `client`
+  param defaulting to a real `AsyncAnthropic`; tests pass a fake whose `messages.create` is an
+  async stub. SDK never hit in the suite.
+- **Per-call construction, no caching** (F10): a new `AsyncAnthropic` per `get_provider` call is
+  fine for a single-process localhost tool. Provider/client caching + lifecycle is a noted F21+
+  follow-up, not a silent gap. `max_tokens=4096` module constant (no `MAX_TOKENS` setting; API
+  requires it); no `thinking` config (a forced-tool extraction needs none).
+
+**Gotchas:**
+- **API shape confirmed via the `claude-api` skill** before coding (per CLAUDE.md): `AsyncAnthropic`,
+  forced tool-use is current, `strict` goes on the **tool** (not `tool_choice`), `max_tokens`
+  required, SDK `timeout` is in **seconds**. Anthropic recommends adaptive thinking for hard tasks,
+  but a forced-tool extraction needs none — omitted.
+- **Generic-error assertion:** the SDK-error test raises `RuntimeError("secret /path... leaked")`
+  and asserts the `ProviderError` message is exactly `"LLM provider request failed"` and contains
+  no `"secret"` — proving `str(exc)` never leaks into the user-facing message (full detail goes to
+  `logger.exception`).
+- **Settings isolation:** tests build `Settings(_env_file=None, anthropic_api_key="test-key", …)`.
+  pydantic-settings ranks **init kwargs above env vars**, so a pinned field is authoritative even
+  if the dev shell exports `ANTHROPIC_API_KEY` — no `delenv` needed for pinned fields.
+- **Registry tests need no SDK mock:** constructing a real `AsyncAnthropic` with a dummy key makes
+  no network call (the httpx client is lazy), so those tests construct real providers and assert
+  type + `provider._model == settings.anthropic_model`.
+- **One E501** (89>88) in a test call — wrapped the args; ruff then clean.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 36 files formatted.
+- `uv run pytest -q` → **127 passed** (116 prior + 11 new), exit 0 (one pre-existing
+  Starlette/httpx TestClient deprecation warning, unrelated).
+- Confirmed by test (SDK mocked, no live LLM): forced-tool response → result dict from
+  `tool_use.input`; `strict: true` present iff a schema is supplied (and the schema is passed
+  through unchanged) and absent otherwise; the call carries `_SYSTEM`, the `<page_content>`
+  delimiter, the forced `tool_choice`, and the model from settings; an SDK exception → generic
+  `ProviderError` (no `str(exc)` leak); a no-`tool_use` response → `ProviderError`; registry
+  returns `AnthropicProvider` for anthropic, raises `ProviderError` for openai/unknown and for an
+  empty key.
+- Invariants held (grep-verified): `anthropic` imported **only** in
+  `app/providers/anthropic_provider.py`; no `os`/env access outside `app/config.py`; model id from
+  settings, never a literal; `ProviderError` the single surfaced failure type.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's
