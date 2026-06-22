@@ -153,6 +153,50 @@ cached `get_settings()`); `tests/test_config.py` (7 tests).
 
 ---
 
+## Phase 1 · Feature 04 — URL safety & SSRF guard  *(2026-06-22)*
+
+**Built:** `app/fetching/errors.py` (`FetchError(RuntimeError)`, `SSRFError(FetchError)`);
+`app/fetching/url_guard.py` (`validate` / `resolve_and_validate`, pure `_is_blocked`,
+async `_resolve`); `tests/test_url_guard.py` (24 tests). No new dependencies — stdlib
+`ipaddress` / `urllib.parse` / `asyncio` / `socket`.
+
+**Decisions:**
+- **Async DNS resolution.** Both `validate` and `resolve_and_validate` are `async def`;
+  `_resolve` uses `await loop.getaddrinfo(...)` so a slow lookup never stalls the event
+  loop (concurrent jobs + dashboard polling). The sync call examples in `library-docs.md`
+  (httpx / browser) pick up a one-word `await` in F05/F06.
+- **Validate-all, pin-first.** Every resolved A/AAAA record is classified; a single
+  blocked address rejects the whole URL; the first vetted address is returned for
+  pinning. Closes the public+private multi-record bypass.
+- **`validate` is a thin wrapper** over `resolve_and_validate` (one classification path).
+- **Error taxonomy:** `SSRFError(FetchError)` — guard rejections are `SSRFError`, but
+  `except FetchError` (browser route handler) still catches them; bad scheme / missing
+  host / DNS failure raise the base `FetchError`.
+- **`ALLOW_PRIVATE_HOSTS=true` disables only the IP block** (the test/owned-LAN escape
+  hatch); the scheme allow-list always applies.
+- **Test file is `tests/test_url_guard.py`** (the project's actual test-per-module
+  convention), not the coarse `tests/test_fetching.py` from the architecture tree.
+
+**Gotchas:**
+- **IPv4-mapped IPv6** (`::ffff:127.0.0.1`) must be unwrapped via `ip.ipv4_mapped` before
+  classification, or a loopback target slips through as a "public" v6 address.
+- **The `gaierror`→`FetchError` mapping lives inside `_resolve`**, so a test that
+  monkeypatches `_resolve` can't exercise it — that one test patches the running loop's
+  `getaddrinfo` directly; every other test patches the `_resolve` seam to avoid real DNS.
+- `_settings()` pins `allow_private_hosts` explicitly so a dev-shell `ALLOW_PRIVATE_HOSTS`
+  can't bleed into assertions (same isolation pattern as `test_config.py`).
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` clean.
+- `uv run pytest -q` → **36 passed** (12 prior + 24 new), exit 0.
+- Confirmed: non-http schemes + missing host → `FetchError`; blocked IP literals (v4, v6,
+  IPv4-mapped, metadata `169.254.169.254`, `0.0.0.0`) → `SSRFError`; public literal/
+  hostname pass and pin; rebinding-style (public host → private IP) and multi-IP-with-one-
+  private → `SSRFError`; all-public multi-IP pins the first; escape hatch permits private
+  but still enforces scheme; `gaierror` → `FetchError`; `SSRFError` caught by `except FetchError`.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's
@@ -170,3 +214,11 @@ Key Decisions near ~10. The authoritative versions live in `architecture.md` /
   forcing the tool only guarantees it is *called*; the returned dict is re-validated
   against the request `output_schema` in `app/extraction/` regardless. (Authoritative
   in `architecture.md` / `library-docs.md`.)
+- **SSRF guard design spec** (pruned 2026-06-22, now implemented in F04): the HTTP path
+  **pins the validated IP per request** (IP-in-URL + `Host` header + `sni_hostname`),
+  closing the resolve→connect race, with a hard streamed byte cap; the browser path
+  guards every connection (`context.route` + `service_workers="block"` +
+  `route_web_socket` blocking all WS) but **can't pin**, so it carries a documented
+  residual rebinding risk and a best-effort byte cap. Therefore **rendering is opt-in**
+  (`render`, default off) and Chromium launches lazily on first render. Authoritative in
+  `architecture.md` / `library-docs.md`.
