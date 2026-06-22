@@ -7,3 +7,7 @@ class FetchError(RuntimeError):
 
 class SSRFError(FetchError):
     """The URL was rejected by the SSRF guard (non-public / disallowed address)."""
+
+
+class TransientFetchError(FetchError):
+    """A transient fetch failure (timeout / connection error) that may be retried."""

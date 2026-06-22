@@ -197,6 +197,66 @@ async `_resolve`); `tests/test_url_guard.py` (24 tests). No new dependencies —
 
 ---
 
+## Phase 1 · Feature 05 — HTTP fetch (fast path)  *(2026-06-22)*
+
+**Built:** `app/fetching/models.py` (`FetchResult` frozen dataclass + computed
+`status_ok`/`is_html`); `app/fetching/http_fetcher.py` (`fetch(url, *, settings,
+transport=None)`); `TransientFetchError(FetchError)` added to `app/fetching/errors.py`;
+`tests/test_fetch_models.py` (19 tests) + `tests/test_http_fetcher.py` (11 tests). No new
+dependencies — `httpx` was already in the stack.
+
+**Decisions:**
+- **Transient failures get their own type.** `TransientFetchError(FetchError)` is raised for
+  httpx timeouts/connection failures (retryable); oversize/too-many-redirects stay plain
+  `FetchError`; SSRF stays `SSRFError`. Gives F07/F21 a clean retry-then-render vs hard-fail
+  signal in the layer that raises it.
+- **Non-2xx is returned, not raised.** A 4xx/5xx comes back as a `FetchResult` (per the F07
+  fallback matrix); only timeout/connection/too-many-redirects/size-cap/SSRF raise.
+- **`FetchResult` = 5 data fields + computed `status_ok`/`is_html`.** The two properties are
+  pure functions already referenced by the architecture data-flow / F07 matrix, keeping that
+  matrix declarative. `is_html` treats an empty/missing content-type leniently as HTML.
+- **Test seam = optional `transport` param** → `httpx.MockTransport`; no new dep (no respx),
+  prod path unchanged. `httpx.AsyncClient(transport=None)` already falls back to the default
+  transport, so no conditional-kwargs plumbing was needed.
+- **Pinning realized exactly per `library-docs.md` → httpx:** `resolve_and_validate` →
+  IP-in-URL via `copy_with(host=ip)`, `Host` header = original host (+ port if non-default),
+  `extensions={"sni_hostname": host}`; `follow_redirects=False` with manual per-hop
+  re-resolve+re-pin; relative `Location` resolved with `urljoin` against the **logical** URL;
+  streamed `aiter_bytes` with a hard pre-buffer cap at `MAX_RESPONSE_BYTES`.
+
+**Gotchas:**
+- **Documentation IP ranges are non-global in Python 3.12.** `192.0.2.0/24`,
+  `198.51.100.0/24`, `203.0.113.0/24` (TEST-NET) are classified `is_private`/not-global, so
+  the guard correctly rejects them. First redirect-repins test used `198.51.100.1`/
+  `203.0.113.9` and failed with `SSRFError` — swapped to real public IPs (`93.184.216.34`,
+  `1.1.1.1`). The guard was right; the fixture was wrong.
+- **The `library-docs.md` httpx example calls the guard without `await`** (the guard went
+  async in F04) — added the `await`. F06's browser route handler needs the same.
+- **IPv6 pinning:** bracket the literal for the URL host and `Host` header via a small
+  `_bracket` helper; httpx accepts the bracketed form in `copy_with` and exposes `.host`
+  unbracketed (confirmed by `test_ipv6_pinned_ip_is_usable`).
+- **Simulating transport failures with `MockTransport`:** the handler can `raise
+  httpx.ReadTimeout(...)` / `httpx.ConnectError(...)` (constructed with `request=request`);
+  `httpx.TimeoutException` is a subclass of `httpx.TransportError`, so the `except` order is
+  TimeoutException first (→ "timed out") then TransportError (→ "failed"), both →
+  `TransientFetchError`.
+- **API shapes verified against Context7** `/encode/httpx` (sni_hostname extension + Host
+  override + MockTransport + async streaming) before writing code, per CLAUDE.md.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → clean.
+- `uv run pytest -q` → **66 passed** (36 prior + 19 models + 11 fetcher), exit 0. (One
+  pre-existing Starlette/httpx TestClient deprecation warning, unrelated to this feature.)
+- Confirmed by test: success returns a populated `FetchResult` and the request hit the
+  **pinned IP** with original `Host` + `sni_hostname`; non-2xx returns a `FetchResult`;
+  timeout/connect → `TransientFetchError`; oversized → `FetchError` (not transient);
+  too-many-redirects → `FetchError`; redirect→metadata → `SSRFError`; redirects re-pin each
+  hop; relative `Location` resolves against the logical URL; IPv6 pinned IP works.
+- Invariants held: `httpx` imported only in `app/fetching/`; no env access outside
+  `app/config.py`; no browser/render code introduced (scope held to the fast path).
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

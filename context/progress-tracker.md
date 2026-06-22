@@ -12,21 +12,34 @@ immediately know what is done, what is in progress, and what is next.
 ## Current Status
 
 **Phase:** Phase 1 — Fetch & Render
-**Last completed:** 04 URL safety & SSRF guard (2026-06-22)
-**Next:** 05 HTTP fetch (fast path)
+**Last completed:** 05 HTTP fetch (fast path) (2026-06-22)
+**Next:** 06 Browser render (fallback)
 
 **Carry-over into next session:**
-- **Features 03 + 04 are uncommitted.** F03 (`app/main.py`, `app/__main__.py`,
+- **Features 03 + 04 + 05 are uncommitted.** F03 (`app/main.py`, `app/__main__.py`,
   `app/logging.py`, `app/api/health.py`, `tests/test_main.py`, the `SettingsDep` add to
-  `app/config.py`) and F04 (`app/fetching/errors.py`, `app/fetching/url_guard.py`,
-  `tests/test_url_guard.py`) are both unstaged. F01/F02 are committed on `main`. Commit
-  only when asked.
-- **F05 consumes the guard via `await`.** `resolve_and_validate(url, *, settings)` and
-  `validate(...)` are **`async`** now — the `library-docs.md` httpx example calls them
-  without `await`; add it. The fetcher must pin the returned IP (IP-in-URL + `Host`
-  header + `extensions={"sni_hostname": host}`) and re-resolve+re-pin every redirect hop.
-  `FetchResult` (`app/fetching/models.py`) is referenced by docs but not built yet — it
-  lands in F05.
+  `app/config.py`), F04 (`app/fetching/url_guard.py`, the original `app/fetching/errors.py`,
+  `tests/test_url_guard.py`), and F05 (`app/fetching/models.py`, `app/fetching/http_fetcher.py`,
+  the `TransientFetchError` add to `errors.py`, `tests/test_fetch_models.py`,
+  `tests/test_http_fetcher.py`) are all unstaged. F01/F02 are committed on `main`. Commit
+  only when asked. **Pending decision for next session:** commit F03–F05 (one commit or
+  three feature commits) before starting F06, or continue building first.
+- **F06 builds the `FetchResult` from the REAL `page.goto()` response + `page.url`** — never
+  hardcode `200`/`text/html`/the original URL; set `mode="browser"`. It must **`await`** the
+  async guard (`validate`/`resolve_and_validate`) inside the `context.route` handler, exactly
+  as F05 does. The browser path **can't pin** the IP → documented residual rebinding risk +
+  best-effort byte cap (F05's HTTP cap is the hard guarantee).
+- **`FetchResult` (`app/fetching/models.py`) now exists** — `@dataclass(frozen=True,
+  slots=True)` with `html/mode/status/content_type/final_url` + computed `status_ok`/`is_html`
+  (empty content-type treated as HTML). F07's fallback matrix branches on these fields.
+- **`TransientFetchError(FetchError)` now exists** — timeouts/connection failures raise it;
+  oversize/too-many-redirects stay plain `FetchError`; SSRF stays `SSRFError`. F07/F21 branch
+  retry-then-render on the transient type. Non-2xx is **returned** as a `FetchResult`, not raised.
+- **Documentation IP ranges are blocked by the guard.** Python 3.12's `ipaddress` classifies
+  `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` (TEST-NET) as non-global, so the guard
+  rejects them. Use real public IPs in fetch tests (`93.184.216.34`, `1.1.1.1`).
+- **Tests inject `httpx.MockTransport` via the `transport` param** on `http_fetcher.fetch`;
+  DNS still goes through the `url_guard._resolve` seam. No live network.
 - **Guard DNS is mocked via the `_resolve` seam** (no live network). The
   `gaierror`→`FetchError` mapping is *inside* `_resolve`; to exercise it, patch the running
   loop's `getaddrinfo`, not `_resolve`. Tests pin `allow_private_hosts` explicitly so the
@@ -53,7 +66,7 @@ immediately know what is done, what is in progress, and what is next.
 
 ### Phase 1 — Fetch & Render
 - [x] 04 URL safety & SSRF guard
-- [ ] 05 HTTP fetch (fast path)
+- [x] 05 HTTP fetch (fast path)
 - [ ] 06 Browser render (fallback)
 - [ ] 07 Fetch strategy / render decision
 - [ ] 08 HTML cleaning & content reduction
@@ -87,8 +100,6 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
-- **Feature 01 scaffold (2026-06-22):** package skeleton only (`__init__.py` per dir, no module files); **Python pinned to 3.12** via `.python-version` (uv fetched 3.12.13); **hatchling** editable-installs `app` so imports/uvicorn resolve; **one smoke test** dodges pytest's exit-5; ruff `["E","F","I","UP","B"]` + pytest `asyncio_mode="auto"`; CI = `uv sync --frozen` → ruff check → format-check → pytest. Full detail in `build-journal.md`.
-
 - **Feature 04 SSRF guard built (2026-06-22):** `app/fetching/url_guard.py` (`validate` /
   `resolve_and_validate`) + `app/fetching/errors.py` (`FetchError`, `SSRFError(FetchError)`).
   Both functions are **`async`** (`await loop.getaddrinfo` — never blocks the loop);
@@ -96,6 +107,14 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   pinned); IPv4-mapped IPv6 unwrapped; `ALLOW_PRIVATE_HOSTS=true` disables only the IP
   block (scheme allow-list always applies). The HTTP-pin / opt-in-render spec rationale is
   in `architecture.md` and archived in `build-journal.md`. Full detail in `build-journal.md`.
+- **Feature 05 HTTP fetch built (2026-06-22):** `app/fetching/models.py` (`FetchResult`
+  frozen dataclass + computed `status_ok`/`is_html`) + `app/fetching/http_fetcher.py`
+  (`fetch(url, *, settings, transport=None)`): **`await`**s the async guard, **pins the
+  vetted IP** (IP-in-URL + `Host` header + `extensions={"sni_hostname": host}`), manual
+  per-hop redirect re-pin (≤ `max_redirects`; relative `Location` via `urljoin` on the
+  *logical* URL), **hard streamed byte cap** before buffering. New `TransientFetchError`
+  for timeout/connection (retryable); non-2xx is **returned**, not raised. Tests inject
+  `httpx.MockTransport` via the `transport` seam. Full detail in `build-journal.md`.
 - **Scheduler bounded by concurrency AND atomic admission** (15): `MAX_CONCURRENT_JOBS` semaphore + retained task refs + `try_reserve()` (synchronous check-and-increment, no `await` → no TOCTOU) capping in-flight+waiting at `MAX_QUEUED_JOBS`; over cap → `503`/`429`, no job created; `release()` on terminal / failed-create / failed-submit. Admission **closes first on shutdown** (`try_reserve()` → False), and a `submit()` that fails after reserve+create releases the slot **and** terminalizes the job (no `queued` zombie). Shutdown drains **before** the browser closes.
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
