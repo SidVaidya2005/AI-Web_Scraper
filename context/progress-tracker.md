@@ -12,33 +12,29 @@ immediately know what is done, what is in progress, and what is next.
 ## Current Status
 
 **Phase:** Phase 4 — Dashboard **in progress**
-**Last completed:** 17 Dashboard layout & submission form (2026-06-23)
-**Next:** 18 Jobs list & live status (Phase 4 — Dashboard)
+**Last completed:** 18 Jobs list & live status (2026-06-23)
+**Next:** 19 Job detail & result viewer (Phase 4 — Dashboard)
 
 **Carry-over into next session:**
-- **F17 built:** the dashboard shell + working submit form. `app/dashboard/routes.py` — `GET /`
-  renders `index.html`; **form-encoded** `POST /submit` (`Form(...)` fields: `url`, `prompt`,
-  `output_schema` as a JSON **string**, `provider`, `render`) reuses `require_trusted_origin` (F16),
-  parses the schema (`json.loads`, blank → `None`), builds `ExtractRequest`, and admits via the shared
-  `enqueue` helper. On success returns `_submit_result.html` (a "Job queued" note **+ an `hx-swap-oob`
-  re-render of `#jobs`** that re-arms the `every 2s` poller); bad input / at-capacity / shutting-down
-  return an **inline error fragment with HTTP `200`** (HTMX doesn't swap non-2xx) and create **no job**.
-  Templates: `base.html`, `index.html`, `_jobs_container.html` (the poll container, `oob` flag),
-  `_submit_result.html`. `static/styles.css` + **vendored `static/htmx.min.js`** (htmx 2.0.4, same-origin —
-  no CDN/SRI). `create_app()` now mounts `/static`, sets `app.state.templates`, includes the dashboard
-  router. Approved plan: `~/.claude/plans/feature-17-dashboard-quirky-stearns.md`.
-- **Shared admission helper (new):** `app/jobs/submission.py` `enqueue(request, *, scheduler, store)
-  -> Job` now owns the atomic `try_reserve()` → `create()` → `submit()` sequence; raises
-  `AtCapacityError` (gate closed, no job) or re-raises `SchedulerShuttingDown` (after `release()` +
-  `mark_error`). **F16's `/extract` handler was refactored onto it** (maps `AtCapacityError` → `429`+
-  `Retry-After`, `SchedulerShuttingDown` → `503`) — behaviour unchanged, F16 tests still green.
-- **New dependency:** `python-multipart` (added to approved list + `pyproject`/lock) — FastAPI needs it
-  to parse `Form(...)`/urlencoded bodies. Used only by `app/dashboard/`.
-- **Next is F18 (Jobs list & live status):** build `templates/_jobs_table.html` (id, status, mode,
-  timestamps) and `GET /partials/jobs` rendering it from `JobStore.list()`; **return HTTP `286`** once
-  every job is terminal (and when empty) so HTMX stops polling. The `#jobs` polling container + its
-  re-arm-on-submit are **already in place** (F17); F18 only fills the container and adds the `286` stop.
-  Until F18, `GET /partials/jobs` 404s in the browser — expected.
+- **F18 built:** the live jobs table + `286` stop-polling. New `templates/_jobs_table.html` (columns:
+  full-UUID id, status, mode, created/started/finished as UTC `HH:MM:SS`, `—` when unset; empty state
+  "No jobs yet"). New `GET /partials/jobs` in `app/dashboard/routes.py` renders it from
+  `JobStore.list()` (already newest-first) and returns **HTTP `286`** when `all(job.is_terminal ...)`
+  (so empty → `286` too, since `all([])` is True) else `200`. `286` both **swaps the body and stops the
+  poll** (verified via Context7: htmx default `responseHandling` `{"code":"[23]..","swap":true}`).
+  `_STOP_POLLING_STATUS = 286` constant added. Table/status CSS appended to `static/styles.css`
+  (`.jobs-table`, `.status-*`). The F17 `#jobs` container + submit re-arm are **untouched**. Approved
+  plan: `~/.claude/plans/feature-18-jobs-happy-papert.md`.
+- **F18 test trick (reuse for F19):** monkeypatch `app.state.job_store.list` to return crafted `Job`s
+  for deterministic endpoint tests — **safe at shutdown** because `Scheduler._terminalize_survivors`
+  calls `mark_error` on ids absent from the real store and that `JobStateError` is swallowed. One
+  integration test stubs `runner.run_job` to a no-op so a real submitted job stays `queued`.
+- **Next is F19 (Job detail & result viewer):** build `templates/job_detail.html` (renders the result
+  JSON, or the error, **autoescaped** — this is the feature that introduces untrusted-content rendering,
+  so no `| safe`) and `GET /jobs/{id}/view` reading from `JobStore` (404 when unknown). **Wire the
+  job-id link here** — F18 left the id as plain text precisely so F19 turns it into an
+  `<a href="/jobs/{id}/view">`. Verify: a done job renders its result; an error job renders its message;
+  a scraped-content payload is escaped (no HTML injection).
 - **Locked store invariants:** only **terminal** jobs are evicted (TTL from `finished_at`; `MAX_JOBS`
   drops oldest terminal); `queued`/`running` are **never** evicted; transitions enforced
   (`mark_running` only from `queued`; `mark_done`/`mark_error` only from non-terminal; `mark_error`
@@ -46,12 +42,10 @@ immediately know what is done, what is in progress, and what is next.
   `mark_*` under the lock.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F17 — new `app/jobs/submission.py`, `app/dashboard/routes.py`,
-  `templates/*.html` (4), `static/styles.css`, `static/htmx.min.js`, `tests/test_dashboard.py`,
-  `tests/test_jobs_submission.py`; modified `app/api/extract.py`, `app/main.py`, `pyproject.toml`,
-  `uv.lock`, and these context docs (+ `code-standards.md` deps list). HEAD is
-  `4efd371 3.16-Extract-jobs-API-endpoints` (F16 **is** committed; the prior tracker note claiming F16
-  uncommitted was stale). (Reminder: per CLAUDE.md, commits never add a co-author.)
+- **Uncommitted (commit only when asked):** F18 — new `templates/_jobs_table.html`; modified
+  `app/dashboard/routes.py`, `static/styles.css`, `tests/test_dashboard.py`, and these context docs.
+  HEAD is `80ecb0a 4.17-Dashboard-layout-submission-form` (F17 is committed). (Reminder: per CLAUDE.md,
+  commits never add a co-author.)
 
 ---
 
@@ -83,7 +77,7 @@ immediately know what is done, what is in progress, and what is next.
 
 ### Phase 4 — Dashboard
 - [x] 17 Dashboard layout & submission form
-- [ ] 18 Jobs list & live status
+- [x] 18 Jobs list & live status
 - [ ] 19 Job detail & result viewer
 - [ ] 20 Result export
 
@@ -98,6 +92,13 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 18 Jobs list & live status built (2026-06-23):** `templates/_jobs_table.html` (id, status,
+  mode, created/started/finished UTC `HH:MM:SS`) + `GET /partials/jobs` rendering it from
+  `JobStore.list()`; returns **HTTP `286`** when `all(job.is_terminal ...)` (empty → `286` too) else
+  `200`. `286` both swaps the body and stops the poll (verified via Context7: htmx default
+  `{"code":"[23]..","swap":true}`). Job id is plain text — the `/jobs/{id}/view` link is F19. The F17
+  `#jobs` container + submit re-arm untouched. **225 passing, 1 skipped.** (F13 decision pruned →
+  `build-journal.md`.)
 - **Feature 17 Dashboard layout & submit form built (2026-06-23):** server-rendered shell + working
   form. `app/dashboard/routes.py` `GET /` + form-encoded `POST /submit` (`Form(...)`, reuses
   `require_trusted_origin`) → shared **`app/jobs/submission.py::enqueue`** (atomic reserve→create→submit,
@@ -132,15 +133,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   raises". Provider is **built in the runner** (`registry.get_provider(settings, override=request.provider)`)
   and injected (F12 contract). Lifespan now wires `app.state.job_store`. **185 passing, 1 skipped.**
   (F10 Anthropic-provider decision pruned → `build-journal.md`.)
-- **Feature 13 In-memory job store built (2026-06-23):** `app/jobs/models.py` (`Job` +
-  `is_terminal`; `JobStatus(StrEnum)`) and `app/jobs/store.py` `JobStore` — `asyncio.Lock`-guarded
-  `dict`, **lazy** `_evict` (TTL from `finished_at` + oldest-**terminal** `MAX_JOBS` sweep;
-  `queued`/`running` never evicted), newest-first via `reversed(insertion)`, and **enforced
-  transitions** (`mark_running` from `queued`; `mark_done`/`mark_error` non-terminal only; missing
-  id / terminal mutation → `JobStateError`). `JobResponse` landed in `app/models.py` (echoes
-  `url`+`prompt`; `status: str`; `Job` under `TYPE_CHECKING` to sever the `models ↔ jobs.models`
-  cycle). Lifespan wiring deferred to F14. **174 passing, 1 skipped.** (F07 fetch-strategy decision
-  pruned → `build-journal.md`.)
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
 - **The fetch contract returns a `FetchResult`** (html, mode, status, content_type, final_url) so the fallback matrix can branch — not bare HTML. The browser builds it from the **real** `page.goto()` response + `page.url`, never hardcoded `200`/`text/html`/original URL.

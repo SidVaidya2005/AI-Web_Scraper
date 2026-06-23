@@ -1121,6 +1121,71 @@ list in `code-standards.md`, `pyproject.toml`, `uv.lock`). Opens Phase 4. Approv
 
 ---
 
+## Phase 4 · Feature 18 — Jobs list & live status  *(2026-06-23)*
+
+**Built:** `templates/_jobs_table.html` (the live jobs table — innerHTML of the F17
+`#jobs` container); `GET /partials/jobs` added to `app/dashboard/routes.py` (+ a
+`_STOP_POLLING_STATUS = 286` constant); table/status CSS appended to
+`static/styles.css`; 5 new tests in `tests/test_dashboard.py`. No new dependencies; no
+new exception types; container/submit wiring from F17 untouched. Approved plan:
+`~/.claude/plans/feature-18-jobs-happy-papert.md`.
+
+**Decisions** (architect session, developer-confirmed):
+- **`286` stops polling AND swaps the body — verified, not assumed.** Context7
+  `/bigskysoftware/htmx`: htmx's default `responseHandling` is
+  `{"code":"[23]..","swap":true}`, so `286` (matches `[23]..`) is swapped *and* the
+  polling docs confirm `286` halts the poll. So the final poll updates the table to its
+  terminal rows *before* stopping — no one-tick-stale bug. The team's documented `286`
+  choice holds.
+- **Stop condition = `all(job.is_terminal for job in jobs)`.** `all([])` is `True`, so
+  the **empty** table returns `286` too (one expression covers both "empty" and "all
+  terminal"); any `queued`/`running` job → `200` and polling continues.
+- **Plain full-UUID id now; the `/jobs/{id}/view` link is deferred to F19** (scope — no
+  link that 404s until the route exists).
+- **All three timestamps, UTC `HH:MM:SS`** via `strftime`, `—` when `None`; date omitted
+  (jobs are short-lived/in-memory). Formatting is inline in the template (the datetimes
+  are tz-aware UTC, so `strftime` is already UTC) — no Jinja filter added.
+- **Status as `<span class="status status-{{ job.status }}">`** (StrEnum renders its
+  value) so CSS styles each state; reused the existing `--ok-*`/`--err-*`/`--accent`/
+  `--muted` vars (done/error/running/queued).
+- **No untrusted fields in this table → no escaping test here.** Rows render only a UUID,
+  the status enum, `"http"`/`"browser"` mode, and timestamps; result/error text (the
+  untrusted content) is F19's detail page. Jinja autoescaping stays globally on.
+- **Empty-state message lives in `_jobs_table.html`** (`No jobs yet — submit one
+  above.`), matching the placeholder F17 seeded in the container — the `load` poll
+  immediately replaces the container's innerHTML with this partial.
+
+**Gotchas:**
+- **Deterministic tests without the scheduler:** monkeypatch `app.state.job_store.list`
+  to return crafted `Job`s (no event-loop race on background tasks). Safe at lifespan
+  shutdown even for **non-terminal** crafted jobs because `Scheduler._terminalize_survivors`
+  calls `mark_error` on ids absent from the *real* store, which raises a **swallowed**
+  `JobStateError` (confirmed by reading `scheduler.py`). One integration test instead
+  stubs `runner.run_job` to a no-op so a real submitted job stays `queued` (it is
+  `await store.create`-d inside the POST handler, so it exists regardless of whether the
+  background task ran) → `/partials/jobs` deterministically returns `200`.
+- **TestClient does not raise on `286`** (httpx only raises via `raise_for_status`), so
+  the `286` assertions read `resp.status_code` directly.
+- **`TemplateResponse` carries the status code** — passed as `status_code=` (4th positional
+  is `status_code` via keyword) so the partial renders with `286`/`200` as computed.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 57 files
+  formatted (clean).
+- `uv run pytest -q` → **225 passed, 1 skipped** (220 prior + 5 new), exit 0. The skip is
+  the Chromium-gated browser integration test; one pre-existing Starlette/httpx TestClient
+  deprecation warning, unrelated.
+- Confirmed by test: empty store → `286` + "No jobs yet"; all-terminal (`done`+`error`) →
+  `286` with both rows rendered; a `queued`/`done` mix → `200` with `status-queued`; a
+  `running` row shows id, `running`, `browser`, the `14:02:11` UTC time, and `—` for the
+  unset `finished_at`; an end-to-end submit (no-op runner) leaves a `queued` row and
+  `/partials/jobs` → `200`.
+- Invariants held: `app/dashboard/routes.py` only reads the store (no scraping/cleaning/LLM
+  logic); no `| safe` in templates (autoescaping intact); no new dependency; no `os`/env
+  access; the F17 `#jobs` container and submit re-arm are unchanged.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

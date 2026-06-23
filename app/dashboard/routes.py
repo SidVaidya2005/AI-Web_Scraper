@@ -23,6 +23,7 @@ router = APIRouter(tags=["dashboard"])
 
 _BUSY_MESSAGE = "Server is at capacity — please retry in a few seconds."
 _SHUTDOWN_MESSAGE = "Server is shutting down — please retry shortly."
+_STOP_POLLING_STATUS = 286  # htmx: halt the #jobs every-2s poll
 
 
 def _templates(request: Request) -> Jinja2Templates:
@@ -45,6 +46,26 @@ def _readable_input_error(exc: Exception) -> str:
 async def index(request: Request) -> HTMLResponse:
     """Render the dashboard shell: submit form + the live-jobs polling container."""
     return _templates(request).TemplateResponse(request, "index.html", {})
+
+
+@router.get("/partials/jobs", response_class=HTMLResponse)
+async def jobs_partial(request: Request) -> HTMLResponse:
+    """Render the live jobs table; 286 stops polling once all jobs are terminal/empty.
+
+    Returns the table that swaps into the #jobs container's innerHTML. HTTP 286 is
+    htmx's "stop polling" signal — htmx still swaps the body (286 is in its default
+    2xx/3xx swap range), so the final poll shows terminal rows before the poll halts.
+    A later submit re-arms the poller (F17). `all([])` is True, so the empty table
+    stops polling too.
+    """
+    jobs = await request.app.state.job_store.list()
+    stop = all(job.is_terminal for job in jobs)
+    return _templates(request).TemplateResponse(
+        request,
+        "_jobs_table.html",
+        {"jobs": jobs},
+        status_code=_STOP_POLLING_STATUS if stop else 200,
+    )
 
 
 @router.post(

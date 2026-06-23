@@ -7,13 +7,17 @@ form POST is `application/x-www-form-urlencoded` (`client.post(data=...)`).
 """
 
 import json
+import uuid
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.dashboard import routes
 from app.jobs import runner, submission
+from app.jobs.models import Job, JobStatus
 from app.main import app
+from app.models import ExtractRequest
 
 _FORM = {"url": "https://example.com/", "prompt": "get the title"}
 
@@ -160,3 +164,106 @@ def test_submit_at_capacity_shows_busy_and_no_job(
         assert "Job queued" not in resp.text
         assert "capacity" in resp.text.lower()
         assert client.get("/jobs").json() == []
+
+
+# --- F18: GET /partials/jobs (live jobs table + 286 stop-polling) ---
+
+_STAMP = datetime(2026, 6, 23, 14, 2, 11, tzinfo=UTC)
+
+
+def _job(
+    status: JobStatus,
+    *,
+    mode: str | None = None,
+    started: bool = False,
+    finished: bool = False,
+) -> Job:
+    """Build a Job with a valid request and chosen status/timestamps for the table."""
+    return Job(
+        id=str(uuid.uuid4()),
+        status=status,
+        request=ExtractRequest(url="https://example.com/", prompt="x"),
+        mode=mode,
+        created_at=_STAMP,
+        started_at=_STAMP if started else None,
+        finished_at=_STAMP if finished else None,
+    )
+
+
+def _patch_list(monkeypatch: pytest.MonkeyPatch, jobs: list[Job]) -> None:
+    """Make the live store's `list()` return `jobs` (deterministic, no scheduler).
+
+    Safe even for non-terminal `jobs`: at shutdown `_terminalize_survivors` calls
+    `mark_error` on ids absent from the real store, which raises a swallowed
+    `JobStateError`.
+    """
+
+    async def _list() -> list[Job]:
+        return jobs
+
+    monkeypatch.setattr(app.state.job_store, "list", _list)
+
+
+def test_partials_jobs_empty_returns_286(monkeypatch: pytest.MonkeyPatch) -> None:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_list(monkeypatch, [])
+        resp = client.get("/partials/jobs")
+    assert resp.status_code == 286  # empty table → stop polling
+    assert "No jobs yet" in resp.text
+
+
+def test_partials_jobs_all_terminal_returns_286(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = [
+        _job(JobStatus.done, mode="http", started=True, finished=True),
+        _job(JobStatus.error, started=True, finished=True),
+    ]
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_list(monkeypatch, jobs)
+        resp = client.get("/partials/jobs")
+    assert resp.status_code == 286  # all terminal → stop polling
+    assert "jobs-table" in resp.text
+    assert jobs[0].id in resp.text and jobs[1].id in resp.text
+
+
+def test_partials_jobs_active_returns_200(monkeypatch: pytest.MonkeyPatch) -> None:
+    jobs = [
+        _job(JobStatus.queued),
+        _job(JobStatus.done, mode="http", started=True, finished=True),
+    ]
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_list(monkeypatch, jobs)
+        resp = client.get("/partials/jobs")
+    assert resp.status_code == 200  # a non-terminal job → keep polling
+    assert "status-queued" in resp.text
+
+
+def test_partials_jobs_renders_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _job(JobStatus.running, mode="browser", started=True)  # finished unset → —
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_list(monkeypatch, [job])
+        resp = client.get("/partials/jobs")
+    body = resp.text
+    assert resp.status_code == 200
+    assert job.id in body
+    assert "running" in body and "browser" in body
+    assert "14:02:11" in body  # created/started time, UTC HH:MM:SS
+    assert "—" in body  # finished is unset
+
+
+async def _fake_run_job_noop(job_id: str, *, app_state) -> None:
+    """No-op runner: a submitted job stays `queued` so the partial has a live row."""
+    return None
+
+
+def test_partials_jobs_integration_shows_submitted_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner, "run_job", _fake_run_job_noop)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/submit", data=_FORM)
+        resp = client.get("/partials/jobs")
+    assert resp.status_code == 200  # the submitted job is still queued
+    assert "jobs-table" in resp.text
+    assert "status-queued" in resp.text

@@ -109,3 +109,54 @@ button {
 .jobs-empty {
   color: var(--muted);
 }
+
+.jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.jobs-table th,
+.jobs-table td {
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.jobs-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.jobs-table .job-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+.status {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.status-queued {
+  background: #f3f4f6;
+  color: var(--muted);
+}
+
+.status-running {
+  background: #eff6ff;
+  color: var(--accent);
+}
+
+.status-done {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+}
+
+.status-error {
+  background: var(--err-bg);
+  color: var(--err-fg);
+}

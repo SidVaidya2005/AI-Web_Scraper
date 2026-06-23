@@ -1,0 +1,34 @@
+{# Live jobs table — the innerHTML of #jobs, refreshed by the every-2s poll.
+   GET /partials/jobs returns HTTP 286 (stop polling) when every row is terminal or
+   the table is empty; a new submit re-arms the poller (F17, via an OOB swap of the
+   #jobs container). Columns: id, status, mode, created/started/finished (UTC
+   HH:MM:SS). No untrusted fields are rendered here — result/error text lives on the
+   F19 detail page — but Jinja autoescaping stays on regardless. #}
+{% if jobs %}
+<table class="jobs-table">
+  <thead>
+    <tr>
+      <th>Job</th>
+      <th>Status</th>
+      <th>Mode</th>
+      <th>Created</th>
+      <th>Started</th>
+      <th>Finished</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for job in jobs %}
+    <tr>
+      <td class="job-id">{{ job.id }}</td>
+      <td><span class="status status-{{ job.status }}">{{ job.status }}</span></td>
+      <td>{{ job.mode or "—" }}</td>
+      <td>{{ job.created_at.strftime("%H:%M:%S") }}</td>
+      <td>{{ job.started_at.strftime("%H:%M:%S") if job.started_at else "—" }}</td>
+      <td>{{ job.finished_at.strftime("%H:%M:%S") if job.finished_at else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="jobs-empty">No jobs yet — submit one above.</p>
+{% endif %}
