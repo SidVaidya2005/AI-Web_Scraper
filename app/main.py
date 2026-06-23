@@ -11,6 +11,7 @@ from app.api import extract, health
 from app.config import get_settings
 from app.dashboard import routes as dashboard
 from app.fetching.browser import BrowserManager
+from app.fetching.respect import RespectfulClient
 from app.jobs.scheduler import Scheduler
 from app.jobs.store import JobStore
 from app.logging import configure_logging
@@ -26,6 +27,9 @@ async def lifespan(app: FastAPI):
     app.state.browser_manager = BrowserManager(settings)
     # Single source of job state for the process; the runner (F14) drives it.
     app.state.job_store = JobStore(settings=settings)
+    # Respectful-client gate (F21): per-host rate limit + robots.txt, run before
+    # each job's fetch. Pure in-memory state — no async resource to close.
+    app.state.respectful_client = RespectfulClient(settings)
     # Bounded background execution: admission cap + concurrency + graceful drain.
     app.state.scheduler = Scheduler(app_state=app.state, settings=settings)
     try:

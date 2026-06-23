@@ -263,6 +263,19 @@ async def test_context_closed_even_when_goto_raises() -> None:
     assert context.closed is True
 
 
+async def test_render_timeout_mapped_to_fetch_error() -> None:
+    # A goto timeout (F06/F07-deferred) becomes a readable FetchError, not the raw
+    # Playwright error the runner would record as a generic "internal error".
+    browser, context, _ = _make_browser(
+        goto_raises=PlaywrightTimeoutError("nav timeout")
+    )
+    with pytest.raises(FetchError) as exc_info:
+        await render("http://1.1.1.1/", browser=browser, settings=_settings())
+    assert not isinstance(exc_info.value, SSRFError)
+    assert "timed out" in str(exc_info.value)
+    assert context.closed is True  # finally still ran
+
+
 async def test_settle_timeout_is_swallowed() -> None:
     # A missing <body> makes wait_for_selector time out; render still succeeds.
     browser, _, _ = _make_browser(selector_raises=True, content="<html>late</html>")

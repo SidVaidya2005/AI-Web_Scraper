@@ -13,6 +13,7 @@ DNS-rebinding risk; its byte cap is best-effort (the HTTP path owns the hard cap
 """
 
 import asyncio
+import logging
 
 from playwright.async_api import (
     Browser,
@@ -29,6 +30,8 @@ from app.config import Settings
 from app.fetching import url_guard
 from app.fetching.errors import FetchError
 from app.fetching.models import FetchResult
+
+logger = logging.getLogger("app.fetching")
 
 
 class BrowserManager:
@@ -71,9 +74,10 @@ class BrowserManager:
 async def render(url: str, *, browser: Browser, settings: Settings) -> FetchResult:
     """Return a FetchResult with fully rendered HTML for `url` (mode="browser").
 
-    Raises SSRFError/FetchError if the top URL is blocked by the guard, and
-    FetchError if the rendered size exceeds MAX_RESPONSE_BYTES. A non-2xx or
-    non-HTML response is returned (not raised) — the fetch strategy decides.
+    Raises SSRFError/FetchError if the top URL is blocked by the guard, FetchError
+    if the navigation times out (RENDER_TIMEOUT_SECONDS) or the rendered size
+    exceeds MAX_RESPONSE_BYTES. A non-2xx or non-HTML response is returned (not
+    raised) — the fetch strategy decides.
     """
     await url_guard.validate(url, settings=settings)  # fail fast before any context
     context = await browser.new_context(
@@ -114,11 +118,19 @@ async def render(url: str, *, browser: Browser, settings: Settings) -> FetchResu
 
     try:
         page = await context.new_page()
-        response = await page.goto(
-            url,
-            wait_until="domcontentloaded",  # NOT networkidle (can hang on beacons)
-            timeout=settings.render_timeout_seconds * 1000,  # Playwright uses ms
-        )
+        try:
+            response = await page.goto(
+                url,
+                wait_until="domcontentloaded",  # NOT networkidle (can hang on beacons)
+                timeout=settings.render_timeout_seconds * 1000,  # Playwright uses ms
+            )
+        except PlaywrightTimeoutError as exc:
+            # Map the deferred (F06/F07) render timeout to a readable FetchError so
+            # the runner records it as a clean job error, not "internal error".
+            logger.warning("render timed out for %s", url)
+            raise FetchError(
+                f"render timed out after {settings.render_timeout_seconds}s"
+            ) from exc
         try:
             await page.wait_for_selector("body", timeout=settings.render_settle_ms)
         except PlaywrightTimeoutError:

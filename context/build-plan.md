@@ -256,6 +256,19 @@ Make failures graceful and bounded across the pipeline, and be a good web citize
 - Respectful client (lives in `app/fetching/`): honor **robots.txt** when `RESPECT_ROBOTS` (default true; config-overridable for owned sites) and enforce `RATE_LIMIT_PER_HOST_PER_MINUTE` via a per-host limiter, checked before each fetch (and on the robots.txt fetch itself, which also goes through `url_guard`).
 - Verify: simulated timeouts/transient errors produce a clean job `error`, never a crash; a `robots.txt` disallow blocks the fetch; exceeding the per-host rate limit defers/rejects; logs include the area prefix.
 
+> **Built 2026-06-23 (deviations noted):** the **timeout/retry half was already shipped** (F05 fetch
+> timeout, F06 render timeout, F10 LLM timeout, F07 bounded transient retry, F14 readable errors) — F21
+> **verified** those and built only the genuinely-new work: the respectful client, the deferred
+> render-timeout map, and `app.fetching` logging. The respectful-client **module** is
+> `app/fetching/respect.py` (`RespectfulClient`), but the **gate is invoked by the runner**
+> (`await app_state.respectful_client.guard(url)` before `fetch_service.fetch`), not inside
+> `fetch_service` — the runner is the sole caller, so it's the same single chokepoint while keeping
+> `fetch_service`'s signature + tests untouched. Rate-limit over cap → **reject** (`RateLimitedError`,
+> non-retryable); robots **fail-open** on 404/5xx/unreachable but **`SSRFError` propagates**; robots is
+> fetched via `http_fetcher` directly (SSRF-guarded, no gate recursion) and parsed with stdlib
+> `RobotFileParser.parse`. Robots TTL is a module constant, **no new env var**. See
+> `build-journal.md` → Feature 21.
+
 ### 22 Second provider (OpenAI)
 
 Prove the provider abstraction.

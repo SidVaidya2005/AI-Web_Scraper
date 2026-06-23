@@ -1314,6 +1314,94 @@ Closes Phase 4. Approved plan: `~/.claude/plans/f20-result-export-elegant-muffin
 
 ---
 
+## Phase 5 · Feature 21 — Error handling, timeouts, retries & respectful client  *(2026-06-23)*
+
+**Built:** `app/fetching/respect.py` (new, `RespectfulClient`: per-host rolling-window rate
+limiter + TTL robots.txt cache + `guard`/`check_rate_limit`/`check_robots`); two new error
+types in `app/fetching/errors.py` (`RobotsDisallowedError`, `RateLimitedError`); render-timeout
+mapping + `app.fetching` logger in `app/fetching/browser.py`; lifespan wiring in `app/main.py`
+(`app.state.respectful_client`); `app/jobs/runner.py` (`RunnerState.respectful_client` +
+`await guard(url)` before fetch); `tests/test_respect.py` (13) + 1 render-timeout test in
+`tests/test_browser.py` + 2 gate-rejection tests in `tests/test_jobs_runner.py` + 1 lifespan
+test in `tests/test_main.py`. **No new dependencies** (stdlib `urllib.robotparser`/`collections`/
+`time`); **no new env vars**. Opens Phase 5. Approved plan:
+`~/.claude/plans/21-error-handling-timeouts-wobbly-pie.md`.
+
+**Decisions** (architect session, developer-confirmed via AskUserQuestion):
+- **Most of "timeouts & retries" was already shipped** — fetch timeout + `TransientFetchError`
+  (F05), render `goto` timeout in ms (F06), LLM `AsyncAnthropic(timeout=…)` (F10), bounded
+  transient fetch retry (F07), readable job errors (F14). F21 **verified** these and built only
+  the genuinely-new work: the respectful client, the deferred render-timeout map, and
+  `app.fetching` logging. Did **not** re-implement timeouts/retries (confirmed scope).
+- **Gate invoked by the runner, not inside `fetch_service`** (placement refinement). The
+  `RespectfulClient` module lives in `app/fetching/`, but the call site is the runner
+  (`await app_state.respectful_client.guard(url)` right after `mark_running`, before
+  `fetch_service.fetch`). The runner is the sole caller of the fetch path, so it is the same
+  single chokepoint covering both HTTP and render — and `fetch_service.fetch`'s signature and
+  its 23 tests stay untouched. **Documented deviation** from the build-plan's "lives in
+  app/fetching/ … before each fetch" wording (the *module* lives there; only the *call site* is
+  the runner). Annotated under F21 in `build-plan.md`.
+- **Rate-limit over the cap → reject** (confirmed). `check_rate_limit` raises a **non-retryable**
+  `RateLimitedError(FetchError)`; the runner records it as a readable job `error`. Never holds a
+  scheduler slot sleeping. Rolling-window: a `deque[float]` per host, prune `< now-60`, compare,
+  append — **all synchronous, no `await` between** → atomic on the loop (same pattern as
+  `scheduler.try_reserve`). `clock` is constructor-injectable for deterministic window tests.
+- **robots fetch failure → fail-open / allow** (confirmed). Missing/4xx/5xx/timeout/unreachable
+  → allow (logged). **Exception:** an `SSRFError` from the robots fetch **propagates** (caught
+  specifically and re-raised before the broad `except FetchError`) so the job error is the
+  accurate SSRF message — the gate never bypasses `url_guard`.
+- **robots.txt fetched via `http_fetcher.fetch` directly** (not `fetch_service`, avoiding gate
+  recursion; not stdlib `RobotFileParser.read()`, which does its own blocking unguarded
+  `urlopen`). Body parsed with `RobotFileParser.parse(body.splitlines())`. Robots cache keyed by
+  `scheme://netloc` origin, TTL via module constant `_ROBOTS_CACHE_TTL_SECONDS = 3600` (no new
+  env var — consistent with `_MIN_VISIBLE_TEXT_CHARS`/`_MAX_TOKENS` house style).
+- **Render timeout mapped in `browser.render`** (where `render_timeout_seconds`/`page.goto`
+  live): catch `PlaywrightTimeoutError` around `page.goto` → `FetchError("render timed out after
+  Ns")`. Not transient (render is the terminal attempt, no retry). The `finally: context.close()`
+  still runs.
+
+**Gotchas:**
+- **`RobotFileParser` "fresh parser disallows everything" trap.** A `RobotFileParser()` that has
+  never parsed has `last_checked == 0`, and `can_fetch()` returns **False** in that state (it
+  assumes nothing is allowed until robots.txt is read). So the fail-open "allow" case can **not**
+  be a blank parser — it is represented as **`None`** in the cache (`check_robots` returns early
+  when the parser is `None`). A real parser is built only from a 200 body (where `.parse()` sets
+  `last_checked`), so its `can_fetch` works normally. Two tests pin this (404 → allow; a Disallow
+  body → block).
+- **`SSRFError` is a `FetchError` subclass**, so the robots `except SSRFError: raise` must come
+  **before** `except FetchError: return None`, or a blocked host would be silently allowed
+  (then re-blocked by the target fetch, but with a less precise message). A test asserts
+  `SSRFError` propagates out of `check_robots`.
+- **Gate ordering = rate-limit then robots.** If the host is over its cap, robots.txt is never
+  fetched (saves a request). A token consumed before a robots `Disallow` raise is minor
+  over-counting — accepted/conservative.
+- **Existing runner tests needed the new dep.** `run_job` now reads
+  `app_state.respectful_client`; the `test_jobs_runner.py` `SimpleNamespace` fake gained a
+  pass-through `_PassGate` (no-op `guard`) by default, with an optional raising gate for the two
+  new rejection tests. Other suites that run jobs (`test_api_extract`, `test_dashboard`,
+  `test_jobs_scheduler`) stub `runner.run_job` entirely, so they never reach the gate — untouched.
+- **One `E501`** on a test's inline `RateLimitedError(...)` message — wrapped; ruff then clean.
+  `ruff format` reflowed `tests/test_respect.py` (no logic change).
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 61 files formatted.
+- `uv run pytest -q` → **268 passed, 1 skipped** (251 prior + 17 new), exit 0. The skip is the
+  Chromium-gated browser integration test; one pre-existing Starlette/httpx TestClient
+  deprecation warning, unrelated.
+- Confirmed by test: rate limiter passes at the cap, raises `RateLimitedError` over it, rolls
+  after 60s (injected clock), and isolates per host; robots allows a non-disallowed path, blocks
+  a `Disallow`-matching path, fails open on 404/5xx/`TransientFetchError`, propagates `SSRFError`,
+  caches per origin (one fetch for two same-origin checks), and is skipped entirely when
+  `RESPECT_ROBOTS=false`; `guard` runs rate-limit then robots; a render `goto` timeout →
+  `FetchError` (not the raw Playwright error, context still closed); the runner records a
+  `RobotsDisallowedError`/`RateLimitedError` from the gate as a readable job `error` and never
+  fetches when robots disallows; lifespan exposes `app.state.respectful_client`.
+- Invariants held (grep-verified): `app/fetching/respect.py` imports no LLM SDK / `playwright`
+  and no `os`/env; its only network is `http_fetcher.fetch` (→ `url_guard` + pinning + size cap);
+  `app.fetching` logger added to `respect.py` + `browser.py`; no new env var.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

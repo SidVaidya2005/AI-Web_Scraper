@@ -11,3 +11,11 @@ class SSRFError(FetchError):
 
 class TransientFetchError(FetchError):
     """A transient fetch failure (timeout / connection error) that may be retried."""
+
+
+class RobotsDisallowedError(FetchError):
+    """The site's robots.txt disallows fetching the URL for our user agent."""
+
+
+class RateLimitedError(FetchError):
+    """The per-host request rate limit was exceeded (non-transient — not retried)."""

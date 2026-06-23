@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import app.__main__ as app_main
 from app.config import get_settings
 from app.fetching.browser import BrowserManager
+from app.fetching.respect import RespectfulClient
 from app.jobs.scheduler import Scheduler
 from app.jobs.store import JobStore
 from app.main import app
@@ -49,6 +50,13 @@ def test_lifespan_wires_scheduler() -> None:
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.get("/health").status_code == 200
         assert isinstance(app.state.scheduler, Scheduler)
+
+
+def test_lifespan_wires_respectful_client() -> None:
+    # The runner (F21) gates each fetch via app.state.respectful_client.
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/health").status_code == 200
+        assert isinstance(app.state.respectful_client, RespectfulClient)
 
 
 def test_lifespan_drains_scheduler_before_closing_browser(

@@ -17,7 +17,12 @@ from typing import Any
 
 from app.config import Settings
 from app.fetching import fetch_service
-from app.fetching.errors import FetchError, SSRFError
+from app.fetching.errors import (
+    FetchError,
+    RateLimitedError,
+    RobotsDisallowedError,
+    SSRFError,
+)
 from app.fetching.models import FetchResult
 from app.jobs.models import JobStatus
 from app.jobs.runner import run_job
@@ -34,10 +39,24 @@ def _settings(**overrides: Any) -> Settings:
     return Settings(_env_file=None, **overrides)
 
 
-def _app_state(store: JobStore, settings: Settings) -> types.SimpleNamespace:
+class _PassGate:
+    """A pass-through respectful-client: the gate is a no-op unless overridden."""
+
+    async def guard(self, url: str) -> None:
+        return None
+
+
+def _app_state(
+    store: JobStore, settings: Settings, *, respectful_client: Any = None
+) -> types.SimpleNamespace:
     # browser_manager is never touched (fetch is mocked); a sentinel is enough.
+    # respectful_client defaults to a no-op gate so existing pipeline tests are
+    # unaffected; F21 gate-rejection tests inject a raising one.
     return types.SimpleNamespace(
-        job_store=store, browser_manager=object(), settings=settings
+        job_store=store,
+        browser_manager=object(),
+        respectful_client=respectful_client or _PassGate(),
+        settings=settings,
     )
 
 
@@ -270,3 +289,51 @@ async def test_url_coerced_to_str_and_provider_override_forwarded(monkeypatch) -
     assert seen["url_type"] is str
     assert seen["url"] == "https://example.com/"
     assert seen["override"] == "anthropic"
+
+
+async def test_robots_disallowed_marks_error_without_fetching(monkeypatch) -> None:
+    store = JobStore(settings=_settings())
+    job = await store.create(ExtractRequest(url="https://example.com/", prompt="p"))
+    fetched = False
+
+    async def fake_fetch(url: str, **kwargs: Any) -> FetchResult:
+        nonlocal fetched
+        fetched = True
+        return _fetch_result()
+
+    monkeypatch.setattr(fetch_service, "fetch", fake_fetch)
+
+    class _DenyGate:
+        async def guard(self, url: str) -> None:
+            raise RobotsDisallowedError(f"robots.txt disallows fetching {url}")
+
+    await run_job(
+        job.id, app_state=_app_state(store, _settings(), respectful_client=_DenyGate())
+    )
+
+    errored = await store.get(job.id)
+    assert errored is not None
+    assert errored.status is JobStatus.error
+    assert errored.error == "robots.txt disallows fetching https://example.com/"
+    assert fetched is False  # the gate runs before any fetch
+
+
+async def test_rate_limited_marks_error(monkeypatch) -> None:
+    store = JobStore(settings=_settings())
+    job = await store.create(ExtractRequest(url="https://example.com/", prompt="p"))
+
+    class _LimitGate:
+        async def guard(self, url: str) -> None:
+            raise RateLimitedError(
+                "rate limit exceeded for host 'example.com' (30/min)"
+            )
+
+    await run_job(
+        job.id, app_state=_app_state(store, _settings(), respectful_client=_LimitGate())
+    )
+
+    errored = await store.get(job.id)
+    assert errored is not None
+    assert errored.status is JobStatus.error
+    assert errored.error is not None
+    assert errored.error.startswith("rate limit exceeded for host")

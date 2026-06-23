@@ -16,6 +16,7 @@ from app.config import Settings
 from app.extraction import engine
 from app.fetching import browser, fetch_service
 from app.fetching.errors import FetchError
+from app.fetching.respect import RespectfulClient
 from app.jobs.store import JobStateError, JobStore
 from app.providers import registry
 from app.providers.base import ProviderError
@@ -28,6 +29,7 @@ class RunnerState(Protocol):
 
     job_store: JobStore
     browser_manager: browser.BrowserManager
+    respectful_client: RespectfulClient
     settings: Settings
 
 
@@ -42,8 +44,12 @@ async def run_job(job_id: str, *, app_state: RunnerState) -> None:
     store = app_state.job_store
     try:
         job = await store.mark_running(job_id)
+        url = str(job.request.url)
+        # Be a polite client: enforce per-host rate limit + robots.txt before any
+        # fetch. Rejections are FetchError subclasses → recorded by the arm below.
+        await app_state.respectful_client.guard(url)
         fetched = await fetch_service.fetch(
-            str(job.request.url),
+            url,
             browser_manager=app_state.browser_manager,
             settings=app_state.settings,
             render=job.request.render,
