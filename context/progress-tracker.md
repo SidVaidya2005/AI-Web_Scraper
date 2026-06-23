@@ -12,31 +12,34 @@ immediately know what is done, what is in progress, and what is next.
 ## Current Status
 
 **Phase:** Phase 3 — Jobs & API (in progress)
-**Last completed:** 14 Async job runner (2026-06-23)
-**Next:** 15 Job scheduler — concurrency, admission & shutdown (Phase 3 — Jobs & API)
+**Last completed:** 15 Job scheduler — concurrency, admission & shutdown (2026-06-23)
+**Next:** 16 Extract & jobs API endpoints (Phase 3 — Jobs & API)
 
 **Carry-over into next session:**
-- **F14 built:** `app/jobs/runner.py` — `run_job(job_id, *, app_state)` drives
-  `mark_running → fetch_service.fetch(str(url), …, render=…) → cleaner.clean → registry.get_provider →
-  engine.extract → mark_done(result, mode)`; the project's **error boundary** (never raises). Known
-  errors (`ProviderError`/`FetchError`+subclasses/`ValidationError`) → `mark_error(str(exc))`; unknown
-  → generic `"internal error — see server logs"` (traceback logged). A local **`RunnerState` Protocol**
-  (`job_store`/`browser_manager`/`settings`) types `app_state`; a best-effort **`_terminalize`** swallows
-  `JobStateError` so an already-terminal/missing job can't make the boundary raise. **Lifespan now wires
-  `app.state.job_store = JobStore(settings=settings)`** (F13-deferred). Suite **185 passing, 1 skipped**
-  (174 prior + 11 new). Approved plan: `~/.claude/plans/f14-async-job-vivid-harbor.md`.
-- **Next is F15 (Job scheduler — concurrency, admission & shutdown):** `app/jobs/scheduler.py` —
-  `try_reserve()`/`release()`/`submit(job_id)` + `SchedulerShuttingDown`. Run `run_job` under a
-  `MAX_CONCURRENT_JOBS` semaphore with **retained task refs** (no fire-and-forget `create_task`); atomic
-  `try_reserve()` (sync check-and-increment, no `await`) caps in-flight+waiting at `MAX_QUEUED_JOBS` →
-  over cap `503`/`429`, no job created; `release()` on terminal / failed-create / failed-submit. Admission
-  **closes first on shutdown** (`try_reserve()` → False); a `submit()` failing after reserve+create
-  `release()`s **and** `mark_error`s the job. **Lifespan shutdown must drain the scheduler BEFORE
-  `browser_manager.aclose()`** (in-flight renders finish first) — the `app/main.py` finally block is
-  ready for this insertion.
-- **F14 → F15 contract:** the scheduler calls `run_job(job_id, app_state=app_state)`; `run_job` already
-  owns all error handling and never raises, so the scheduler only manages concurrency/admission/lifecycle.
-  The **`RunnerState` Protocol is reusable** as the scheduler's `app_state` type.
+- **F15 built:** `app/jobs/scheduler.py` — `Scheduler` (`try_reserve`/`release`/`submit`/`shutdown`) +
+  `SchedulerShuttingDown`. **Two bounds:** a `MAX_CONCURRENT_JOBS` semaphore (running subset) **and** a
+  synchronous atomic `try_reserve()` (plain-`int` `_reserved`, check-and-increment with **no `await`
+  between**) capping in-flight+waiting at `MAX_QUEUED_JOBS` (returns False at cap or while draining).
+  `submit()` is **sync**, `create_task`s `_run` and **retains the ref** (no fire-and-forget); `_run` =
+  `try: async with sem: await runner.run_job(...) finally: self.release()` → exactly one release per
+  task, even on cancel. `shutdown()`: `_draining=True` → `asyncio.wait(grace)` → cancel stragglers →
+  `gather` → sweep `store.list()` marking non-terminal jobs `error` ("server shutting down"). Lifespan
+  wires `app.state.scheduler` and **drains BEFORE `browser_manager.aclose()`**. Suite **196 passing,
+  1 skipped** (185 prior + 11 new). Approved plan: `~/.claude/plans/f15-job-scheduler-woolly-dragonfly.md`.
+- **Next is F16 (Extract & jobs API endpoints):** `app/api/extract.py` — `POST /extract` (`202` +
+  `job_id`; `503`/`429` when `scheduler.try_reserve()` returns False — atomic, **before** `create()`),
+  `GET /jobs/{id}`, `GET /jobs`. The handler owns the orchestration F15 left to it:
+  `try_reserve()` → `try: job = await store.create(req) except BaseException: release(); raise` →
+  `try: scheduler.submit(job.id) except SchedulerShuttingDown: release(); await store.mark_error(job.id,
+  "server shutting down"); raise 503`. Reject root-non-object / out-of-subset `output_schema` with `422`
+  (already wired via the `ExtractRequest` `@field_validator` → `InvalidSchemaError(ValueError)` from F11).
+  Add the **Origin check on `POST /extract`** (state-changing; v1 CSRF baseline alongside the Host
+  allow-list). Return the declared `JobResponse` (`from_job`). Verify with TestClient (stub the runner).
+- **F15 → F16 contract:** the scheduler exposes `try_reserve()` (sync bool), `release()` (sync),
+  `submit(job_id)` (sync; raises `SchedulerShuttingDown` only while draining), `shutdown()` (async).
+  `run_job` already owns all error handling and never raises; the scheduler manages
+  concurrency/admission/lifecycle only. The handler is the **only** place reserve→create→submit is
+  orchestrated.
 - **Locked store invariants:** only **terminal** jobs are evicted (TTL from `finished_at`; `MAX_JOBS`
   drops oldest terminal); `queued`/`running` are **never** evicted; transitions enforced
   (`mark_running` only from `queued`; `mark_done`/`mark_error` only from non-terminal; `mark_error`
@@ -44,15 +47,14 @@ immediately know what is done, what is in progress, and what is next.
   `mark_*` under the lock.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F14 — `app/jobs/runner.py` (new), `tests/test_jobs_runner.py`
-  (new); `app/main.py`, `tests/test_main.py` (modified) — **plus still-uncommitted F12** (`app/extraction/
-  engine.py`, `tests/test_extraction_engine.py`) **and F13** (`app/jobs/models.py`, `app/jobs/store.py`,
-  `tests/test_jobs_models.py`, `tests/test_jobs_store.py` new; `app/models.py`, `tests/test_models.py`
-  modified) and these context docs. HEAD is `a4f3208 2.11-Extraction-schemas`.
-  (Reminder: per CLAUDE.md, commits never add a co-author.)
-- **OPEN — pending decision:** F12, F13 **and** F14 are all complete and verified (185 passing / 1
-  skipped, ruff clean) but uncommitted; HEAD is still `a4f3208 2.11-Extraction-schemas`. Decide the
-  commit strategy (e.g. F12 → F13 → F14 as three commits) before/at the next session.
+- **Uncommitted (commit only when asked):** F15 — `app/jobs/scheduler.py` (new),
+  `tests/test_jobs_scheduler.py` (new); `app/main.py`, `tests/test_main.py` (modified) and these context
+  docs. HEAD is `60aaa19 3.14-Async-job-runner`. F12/F13/F14 are **committed** (the earlier "uncommitted
+  F12–F14" note was stale — verified via `git log`). (Reminder: per CLAUDE.md, commits never add a
+  co-author.)
+- **OPEN — pending decision:** session ended right after F15 verified (196 passing / 1 skipped, ruff
+  clean). Developer was asked "commit F15 now, or move on to F16?" and has **not** answered yet — decide
+  this first next session before starting F16.
 
 ---
 
@@ -79,7 +81,7 @@ immediately know what is done, what is in progress, and what is next.
 ### Phase 3 — Jobs & API
 - [x] 13 In-memory job store
 - [x] 14 Async job runner
-- [ ] 15 Job scheduler — concurrency, backpressure & shutdown
+- [x] 15 Job scheduler — concurrency, admission & shutdown
 - [ ] 16 Extract & jobs API endpoints
 
 ### Phase 4 — Dashboard
@@ -99,6 +101,14 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 15 Job scheduler built (2026-06-23):** `app/jobs/scheduler.py` `Scheduler` +
+  `SchedulerShuttingDown`. **Two bounds:** `MAX_CONCURRENT_JOBS` semaphore (running) **and** a
+  synchronous atomic `try_reserve()` (`int` check-and-increment, no `await`) capping in-flight+waiting
+  at `MAX_QUEUED_JOBS`. `submit()` is sync, retains the task ref (no fire-and-forget); the admission slot
+  is released in the task's `finally` (one release per task, even on cancel). `shutdown()` closes
+  admission → drains within `SHUTDOWN_GRACE_SECONDS` → cancels stragglers → sweeps `store.list()` marking
+  non-terminal jobs `error`; lifespan drains **before** `browser_manager.aclose()`. Reuses F14's
+  `RunnerState`. **196 passing, 1 skipped.** (Pre-code F15 spec bullet pruned → `build-journal.md`.)
 - **Feature 14 Async job runner built (2026-06-23):** `app/jobs/runner.py`
   `run_job(job_id, *, app_state)` — the pipeline driver and **top-level error boundary** (never
   raises): `mark_running → fetch_service.fetch(str(url)) → cleaner.clean → registry.get_provider →
@@ -137,7 +147,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   property literally named `not` is accepted. `app/models.py` `ExtractRequest` wires the gate via a
   `@field_validator` (→ 422 in F16); **`JobResponse` deferred to F13/F16**. **149 passing, 1
   skipped.** (F08 cleaner decision pruned → `build-journal.md`.)
-- **Scheduler bounded by concurrency AND atomic admission** (15): `MAX_CONCURRENT_JOBS` semaphore + retained task refs + `try_reserve()` (synchronous check-and-increment, no `await` → no TOCTOU) capping in-flight+waiting at `MAX_QUEUED_JOBS`; over cap → `503`/`429`, no job created; `release()` on terminal / failed-create / failed-submit. Admission **closes first on shutdown** (`try_reserve()` → False), and a `submit()` that fails after reserve+create releases the slot **and** terminalizes the job (no `queued` zombie). Shutdown drains **before** the browser closes.
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
 - **The fetch contract returns a `FetchResult`** (html, mode, status, content_type, final_url) so the fallback matrix can branch — not bare HTML. The browser builds it from the **real** `page.goto()` response + `page.url`, never hardcoded `200`/`text/html`/original URL.

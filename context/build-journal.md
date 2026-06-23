@@ -870,6 +870,94 @@ new dependencies; no new exception types. Approved plan:
 
 ---
 
+## Phase 3 · Feature 15 — Job scheduler (concurrency, admission & shutdown)  *(2026-06-23)*
+
+**Built:** `app/jobs/scheduler.py` (`Scheduler` + `SchedulerShuttingDown`); lifespan
+wiring in `app/main.py` (`app.state.scheduler` + drain-before-browser-close);
+`tests/test_jobs_scheduler.py` (9 tests) + 2 new lifespan tests in
+`tests/test_main.py`. No new dependencies (stdlib `asyncio`/`logging` only); one new
+exception type (`SchedulerShuttingDown`). Approved plan:
+`~/.claude/plans/f15-job-scheduler-woolly-dragonfly.md`.
+
+**Decisions** (architect session, developer-confirmed):
+- **Two bounds, both required.** A `MAX_CONCURRENT_JOBS` `asyncio.Semaphore` caps the
+  *running* subset; a synchronous, atomic `try_reserve()` (plain `int` `_reserved`,
+  check-and-increment with **no `await` between**) caps *in-flight + waiting* at
+  `MAX_QUEUED_JOBS`. A semaphore alone is unbounded — waiting tasks and their `queued`
+  jobs accumulate. `try_reserve()` returns False when `_draining` or at cap.
+- **`submit()` is synchronous** (the F16 handler calls it without `await`): it
+  `asyncio.create_task(self._run(job_id))` and **retains a strong ref** in
+  `self._tasks` (+ `add_done_callback(self._tasks.discard)`) — never a fire-and-forget
+  `create_task`. Excess submissions block on the semaphore inside `_run` while still
+  counting against the admission cap. `submit()` raises `SchedulerShuttingDown` only
+  while draining.
+- **Slot released in the task's `finally`, not on the store's terminal transition**
+  (developer-confirmed). `_run` = `try: async with sem: await runner.run_job(...)
+  finally: self.release()`. This releases exactly once per task **even under
+  cancellation**, where `run_job` raises `CancelledError` and never reaches a terminal
+  store transition. Normal flow: one reserve → one release. The F16 handler releases
+  only on the no-task paths (failed `create`, `SchedulerShuttingDown` from `submit`).
+- **Shutdown = grace, then cancel, then sweep** (confirmed via `AskUserQuestion`).
+  `_draining = True` → `asyncio.wait(set(self._tasks), timeout=shutdown_grace_seconds)`
+  → `cancel()` each still-pending task → `gather(*pending, return_exceptions=True)` to
+  settle → `_terminalize_survivors()`. Runs **before** `browser_manager.aclose()` in
+  the lifespan so a live render can't outlast Chromium.
+- **Survivors terminalized by sweeping `store.list()`** (confirmed). Iterate
+  `app_state.job_store.list()` and `mark_error(..., "server shutting down")` every
+  non-terminal job, swallowing `JobStateError` on races (same best-effort shape as
+  `runner._terminalize`). Catches both `queued`-on-semaphore tasks and `running` jobs
+  whose tasks were cancelled (cancelled `run_job` never self-terminalizes — its
+  `except Exception` doesn't catch `CancelledError`; the sweep is their terminalizer).
+- **Reuses F14's `RunnerState` Protocol** as the `app_state` type (passed straight to
+  `run_job`; `app_state.job_store` used for the sweep). Constructor matches
+  `architecture.md`: `Scheduler(*, app_state, settings)`.
+- **Test seam = monkeypatch `scheduler.runner.run_job`** (module-qualified call), the
+  established project seam style (`fetch_service` → `http_fetcher.fetch`); no
+  production-only injection param. F16's reserve→create→release/mark_error
+  orchestration is **F16's** — F15 ships and unit-tests the primitives.
+
+**Gotchas:**
+- **Cancellation, not a flag, interrupts in-flight work.** `run_job` doesn't poll a
+  draining flag mid-pipeline (it `await`s a long fetch/render), so the grace path must
+  `task.cancel()` stragglers; the post-cancel store sweep is what records their error.
+- **`asyncio.wait` gets a snapshot** (`set(self._tasks)`) because the `done_callback`
+  mutates `self._tasks` as tasks finish during the wait.
+- **`release()` keeps a defensive underflow guard** (`if self._reserved > 0`). The
+  design never double-releases (handler releases only when no task was created), but
+  the guard keeps shutdown robust.
+- **Deterministic concurrency/shutdown tests, no wall-clock sleeps.** Jobs are gated
+  on a never-set `asyncio.Event`; `shutdown_grace_seconds=0` forces the straggler/
+  cancel path; peak-concurrency is observed by yielding `await asyncio.sleep(0)` ~20×
+  to let everything that *can* run, run, then asserting peak == `MAX_CONCURRENT_JOBS`.
+- **`max_*` test overrides must satisfy the settings relationship**
+  (`max_concurrent_jobs <= max_queued_jobs <= max_jobs`), or `Settings` raises at
+  construction (same constraint hit in the F13 store tests).
+- **TDD red observed:** both new test modules first failed with
+  `ModuleNotFoundError: No module named 'app.jobs.scheduler'`; green after
+  implementation. ruff `format` reflowed one test file (no logic change).
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 50 files
+  formatted.
+- `uv run pytest -q` → **196 passed, 1 skipped** (185 prior + 9 scheduler + 2 lifespan),
+  exit 0. The skip is the Chromium-gated browser integration test; one pre-existing
+  Starlette/httpx TestClient deprecation warning, unrelated.
+- Confirmed by test: `try_reserve()` admits exactly `max_queued_jobs` then rejects (no
+  overshoot); `release()` frees a slot and underflow is a safe no-op; draining →
+  `try_reserve()` False + `submit()` raises `SchedulerShuttingDown`; a submitted job
+  runs `run_job` and releases its slot (task ref dropped after); concurrency never
+  exceeds `MAX_CONCURRENT_JOBS` across hand-offs; shutdown leaves an in-grace job
+  `done`, cancels an over-grace `running` job → `error` ("server shutting down"), and
+  sweeps a `queued`-on-semaphore survivor → `error`; shutdown with no tasks is safe and
+  idempotent. Lifespan: `app.state.scheduler` is a `Scheduler`, and `shutdown()` is
+  awaited **before** `browser_manager.aclose()` (spy-recorded order).
+- Invariants held (grep-verified): `app/jobs/scheduler.py` imports no
+  `httpx`/`playwright`/LLM SDK and no `os`/env; all job-state mutation goes through
+  `JobStore` methods; every task is retained (no fire-and-forget `create_task`); drain
+  precedes browser close.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

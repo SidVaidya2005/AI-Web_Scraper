@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import app.__main__ as app_main
 from app.config import get_settings
 from app.fetching.browser import BrowserManager
+from app.jobs.scheduler import Scheduler
 from app.jobs.store import JobStore
 from app.main import app
 
@@ -41,6 +42,40 @@ def test_lifespan_wires_job_store() -> None:
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.get("/health").status_code == 200
         assert isinstance(app.state.job_store, JobStore)
+
+
+def test_lifespan_wires_scheduler() -> None:
+    # The API (F16) reserves/submits via app.state.scheduler; lifespan must expose it.
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/health").status_code == 200
+        assert isinstance(app.state.scheduler, Scheduler)
+
+
+def test_lifespan_drains_scheduler_before_closing_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Shutdown ordering invariant: drain in-flight jobs (renders may be live) BEFORE
+    # the browser closes, so a stray render can't hit a closed Chromium.
+    order: list[str] = []
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/health").status_code == 200
+        scheduler = app.state.scheduler
+        manager = app.state.browser_manager
+        original_shutdown = scheduler.shutdown
+        original_aclose = manager.aclose
+
+        async def spy_shutdown() -> None:
+            order.append("scheduler.shutdown")
+            await original_shutdown()
+
+        async def spy_aclose() -> None:
+            order.append("browser.aclose")
+            await original_aclose()
+
+        monkeypatch.setattr(scheduler, "shutdown", spy_shutdown)
+        monkeypatch.setattr(manager, "aclose", spy_aclose)
+    # Exiting the context ran the lifespan `finally` in the required order.
+    assert order == ["scheduler.shutdown", "browser.aclose"]
 
 
 def test_disallowed_host_rejected() -> None:

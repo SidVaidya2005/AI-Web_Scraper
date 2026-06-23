@@ -8,6 +8,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.api import health
 from app.config import get_settings
 from app.fetching.browser import BrowserManager
+from app.jobs.scheduler import Scheduler
 from app.jobs.store import JobStore
 from app.logging import configure_logging
 
@@ -22,14 +23,15 @@ async def lifespan(app: FastAPI):
     app.state.browser_manager = BrowserManager(settings)
     # Single source of job state for the process; the runner (F14) drives it.
     app.state.job_store = JobStore(settings=settings)
-    # Still wired in by its owning feature:
-    #   app.state.scheduler  -> Feature 15 (bounded scheduler)
+    # Bounded background execution: admission cap + concurrency + graceful drain.
+    app.state.scheduler = Scheduler(app_state=app.state, settings=settings)
     try:
         yield
     finally:
-        # Feature 15 will drain the scheduler BEFORE this close (in-flight renders
-        # must finish first). For now just close the browser — a no-op if it was
-        # never launched.
+        # Drain in-flight jobs BEFORE closing the browser: renders may still be live,
+        # and a stray render must not outlast Chromium. aclose() is a no-op if the
+        # browser was never launched.
+        await app.state.scheduler.shutdown()
         await app.state.browser_manager.aclose()
 
 
