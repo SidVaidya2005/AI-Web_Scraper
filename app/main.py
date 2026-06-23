@@ -3,10 +3,13 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api import extract, health
 from app.config import get_settings
+from app.dashboard import routes as dashboard
 from app.fetching.browser import BrowserManager
 from app.jobs.scheduler import Scheduler
 from app.jobs.store import JobStore
@@ -42,8 +45,12 @@ def create_app() -> FastAPI:
     app = FastAPI(title="AI-Web-Scraper", lifespan=lifespan)
     # v1 DNS-rebinding baseline: only serve requests whose Host is allow-listed.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+    # Dashboard presentation assets (server-rendered Jinja + same-origin htmx/css).
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+    app.state.templates = Jinja2Templates(directory="templates")
     app.include_router(health.router)
     app.include_router(extract.router)
+    app.include_router(dashboard.router)
     return app
 
 

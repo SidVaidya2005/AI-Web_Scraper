@@ -12,15 +12,12 @@ released on a failed create, a failed submit, or — via the scheduler task's `f
 when the job reaches a terminal state.
 """
 
-import logging
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.security import require_trusted_origin
 from app.jobs.scheduler import SchedulerShuttingDown
+from app.jobs.submission import AtCapacityError, enqueue
 from app.models import ExtractRequest, JobResponse
-
-logger = logging.getLogger("app.api")
 
 router = APIRouter(tags=["extract"])
 
@@ -39,29 +36,22 @@ async def submit_extraction(req: ExtractRequest, request: Request) -> JobRespons
 
     At capacity (`try_reserve()` False) → 429 + `Retry-After`, no job created. The
     rare shutdown race (`submit()` while draining) → 503, with the just-created job
-    terminalized so it can't linger `queued`.
+    terminalized so it can't linger `queued`. The admission sequence itself lives in
+    the shared `enqueue` helper (also used by the dashboard form POST).
     """
-    scheduler = request.app.state.scheduler
-    # ATOMIC admission: sync check-and-increment, no await between check and increment.
-    if not scheduler.try_reserve():
+    try:
+        job = await enqueue(
+            req,
+            scheduler=request.app.state.scheduler,
+            store=request.app.state.job_store,
+        )
+    except AtCapacityError:
         raise HTTPException(
             status_code=429,
             detail="server at capacity, retry shortly",
             headers={"Retry-After": str(_RETRY_AFTER_SECONDS)},
-        )
-    store = request.app.state.job_store
-    try:
-        job = await store.create(req)
-    except BaseException:  # roll the reservation back on any create failure
-        scheduler.release()
-        raise
-    try:
-        scheduler.submit(job.id)  # consumes the reservation; concurrency-capped run_job
-    except SchedulerShuttingDown:  # submit() only rejects while draining at shutdown
-        # Release the slot AND terminalize the job so it can't linger queued or leak.
-        scheduler.release()
-        await store.mark_error(job.id, error="server shutting down")
-        logger.warning("rejected job %s: scheduler shutting down", job.id)
+        ) from None
+    except SchedulerShuttingDown:
         raise HTTPException(
             status_code=503, detail="server shutting down, retry shortly"
         ) from None

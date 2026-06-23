@@ -1,0 +1,111 @@
+/* Minimal dashboard styling — thin, server-rendered, no framework. */
+
+:root {
+  --fg: #1c1e21;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --ok-bg: #ecfdf5;
+  --ok-fg: #065f46;
+  --err-bg: #fef2f2;
+  --err-fg: #991b1b;
+  --border: #d1d5db;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--fg);
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+  line-height: 1.5;
+}
+
+header h1 {
+  margin-bottom: 0.1rem;
+}
+
+.tagline {
+  color: var(--muted);
+  margin-top: 0;
+}
+
+section {
+  margin-top: 2rem;
+}
+
+form label {
+  display: block;
+  margin-bottom: 1rem;
+  font-weight: 600;
+}
+
+form .muted {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+input[type="url"],
+input[type="text"],
+textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.3rem;
+  padding: 0.5rem;
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+textarea {
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.render-opt {
+  font-weight: 400;
+}
+
+.render-opt input {
+  margin-right: 0.4rem;
+}
+
+.risk-note {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0 0 1rem;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: 0;
+  border-radius: 6px;
+  padding: 0.55rem 1.1rem;
+  cursor: pointer;
+}
+
+.result {
+  margin-top: 1rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: 6px;
+}
+
+.result.ok {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+}
+
+.result.error {
+  background: var(--err-bg);
+  color: var(--err-fg);
+}
+
+.jobs-empty {
+  color: var(--muted);
+}

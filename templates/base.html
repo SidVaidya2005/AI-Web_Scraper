@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI-Web-Scraper</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <!-- htmx vendored same-origin (static/htmx.min.js) — no external CDN/SRI dependency. -->
+    <script src="/static/htmx.min.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <h1>AI-Web-Scraper</h1>
+      <p class="tagline">Describe what you want; get structured JSON back.</p>
+    </header>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

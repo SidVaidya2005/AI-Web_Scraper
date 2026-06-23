@@ -1044,6 +1044,83 @@ types. **Closes Phase 3.** Approved plan: `~/.claude/plans/f16-extract-abundant-
 
 ---
 
+## Phase 4 · Feature 17 — Dashboard layout & submission form  *(2026-06-23)*
+
+**Built:** `app/jobs/submission.py` (`enqueue` + `AtCapacityError`); `app/dashboard/routes.py`
+(`GET /`, `POST /submit`); `templates/{base,index}.html` + `_jobs_container.html` +
+`_submit_result.html`; `static/styles.css`; vendored `static/htmx.min.js` (htmx 2.0.4);
+`app/api/extract.py` refactored onto `enqueue`; `app/main.py` mounts `/static` +
+`app.state.templates` + the dashboard router; `tests/test_dashboard.py` (10) +
+`tests/test_jobs_submission.py` (4). New dependency `python-multipart` (added to the approved
+list in `code-standards.md`, `pyproject.toml`, `uv.lock`). Opens Phase 4. Approved plan:
+`~/.claude/plans/feature-17-dashboard-quirky-stearns.md`.
+
+**Decisions** (architect session, developer-confirmed via AskUserQuestion):
+- **Shared `enqueue` helper, not duplicated admission code** (developer's call). The atomic
+  `try_reserve()` → `create()` → `submit()` sequence — safety-critical and previously inline in
+  the F16 handler — now lives once in `app/jobs/submission.py::enqueue(request, *, scheduler,
+  store) -> Job`, raising `AtCapacityError` (gate closed) or re-raising `SchedulerShuttingDown`
+  (after `release()` + `mark_error`). Each caller maps to its medium: `/extract` →
+  `429`+`Retry-After` / `503`; dashboard → inline error fragment. The F16 handler shed ~20 lines
+  and its `logging` import; behaviour is unchanged (its tests still pass untouched).
+- **HTMX form + OOB re-arm, not PRG** (developer's call). The form `hx-post`s to `/submit`,
+  `hx-target="#submit-result"`. Success returns `_submit_result.html` = a "Job queued" note **plus
+  an `hx-swap-oob="true"` re-render of `#jobs`** (same id → out-of-band swap) carrying
+  `hx-trigger="load, every 2s"`; its `load` fires immediately, re-arming a poller stopped by F18's
+  `286`. Because the fragment targets `#submit-result` (not the form), typed values persist with no
+  echoing.
+- **Inline error returns HTTP `200`, not `400`** (senior-engineer catch, flagged at plan time).
+  HTMX does **not** swap non-2xx responses by default, so a `400` error fragment would never render.
+  The route catches `(json.JSONDecodeError, ValidationError)` *before* `enqueue` and
+  `AtCapacityError`/`SchedulerShuttingDown` after, rendering an `ok=False` fragment at `200`. No job
+  is created on any error path (asserted via `GET /jobs == []`).
+- **`Form(...)`-decoded, not JSON** (option 1 from `library-docs.md`). `output_schema` arrives as a
+  textarea **string** → `json.loads` (blank → `None`) before building `ExtractRequest`, whose F11
+  `@field_validator` still gates the subset. Reuses `require_trusted_origin` (F16) as a route dep.
+- **htmx vendored same-origin, not CDN** (prompted by the security hook's SRI warning). Downloaded
+  htmx 2.0.4 to `static/htmx.min.js` and served it from `/static`, eliminating the CDN-compromise /
+  Subresource-Integrity concern entirely (and it works offline — fitting a localhost tool). Its
+  sha384 matched the published htmx 2.0.4 integrity hash, confirming authenticity.
+
+**Gotchas:**
+- **`python-multipart` was missing.** FastAPI's `Form(...)` (and Starlette's urlencoded parsing)
+  require it, but it wasn't in the stack — `import multipart` failed. The documented `Form(...)`
+  design assumed it. Added it per the "update the approved-deps list first" rule, then `uv add`.
+- **`JobResponse` has no `render` field**, so the plan's "verify `render` via `GET /jobs`" was wrong.
+  Verified the render checkbox mapping instead by spying on `enqueue` (monkeypatch
+  `app.dashboard.routes.enqueue` with a wrapper that captures the built `ExtractRequest`): box
+  absent → `render is False`; `value="true"` checked → `render is True` (Pydantic v2 bool-coerces
+  `"true"`).
+- **`StaticFiles(directory="static")` is constructed at `create_app()` import time** — the dir must
+  exist or it raises immediately. The first `curl -o static/...` failed (exit 56) because `static/`
+  didn't exist yet; `mkdir -p static` first fixed it. `static/styles.css` keeps the dir present.
+- **OOB include flag.** `_jobs_container.html` takes an `oob` var; `index.html` includes it without
+  setting `oob` (Jinja `Undefined` → falsy → no `hx-swap-oob`), while `_submit_result.html` does
+  `{% set oob = True %}` before the include. One template, both uses.
+- **ruff** reordered the `app/jobs/submission.py` imports and reformatted `tests/test_dashboard.py`;
+  one docstring `E501` was reworded by hand (auto-fix won't touch docstrings).
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 57 files formatted.
+- `uv run pytest -q` → **220 passed, 1 skipped** (206 prior + 10 dashboard + 4 submission), exit 0.
+  The skip is the Chromium-gated browser integration test; one pre-existing Starlette/httpx
+  TestClient deprecation warning, unrelated.
+- Confirmed by test: `GET /` → `200` HTML with the form, the unchecked `render` checkbox + risk note,
+  `#submit-result`, and the `#jobs` container with `every 2s`; a valid submit creates the job and the
+  response re-arms polling (`hx-swap-oob` + `every 2s`); render maps false/true; a valid subset schema
+  is accepted; malformed-JSON, out-of-subset, and invalid-URL inputs each return an inline `200` error
+  and create **no** job; a disallowed `Origin` → `403`; at capacity → inline "capacity" message, no
+  job. `enqueue` unit tests: returns/creates/submits on the happy path; `AtCapacityError` when reserve
+  fails (no job); slot released when `create()` raises; slot released **and** job terminalized `error`
+  when `submit()` raises `SchedulerShuttingDown`.
+- Manual smoke (TestClient): `/static/htmx.min.js` serves `200` (50,917 bytes), and `GET /` references
+  the vendored script.
+- Invariants held (grep-verified): `app/dashboard/` imports no `httpx`/`playwright`/LLM SDK and no
+  `os`/env; templates carry **no** `| safe` (Jinja2 autoescaping intact); the dashboard POST calls the
+  shared `enqueue` (no second copy of admission logic).
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

@@ -11,34 +11,34 @@ immediately know what is done, what is in progress, and what is next.
 
 ## Current Status
 
-**Phase:** Phase 3 — Jobs & API **complete** → Phase 4 — Dashboard next
-**Last completed:** 16 Extract & jobs API endpoints (2026-06-23)
-**Next:** 17 Dashboard layout & submission form (Phase 4 — Dashboard)
+**Phase:** Phase 4 — Dashboard **in progress**
+**Last completed:** 17 Dashboard layout & submission form (2026-06-23)
+**Next:** 18 Jobs list & live status (Phase 4 — Dashboard)
 
 **Carry-over into next session:**
-- **F16 built:** `app/api/extract.py` — `POST /extract` (`202` + `JobResponse`), `GET /jobs`
-  (newest-first `list[JobResponse]`), `GET /jobs/{job_id}` (`404` if unknown/evicted). Handler runs the
-  canonical orchestration: `try_reserve()` → `try: await store.create(req) except BaseException:
-  release(); raise` → `try: scheduler.submit(job.id) except SchedulerShuttingDown: release(); await
-  store.mark_error(..., "server shutting down"); raise 503 from None`. **At capacity** (`try_reserve()`
-  False) → **`429` + `Retry-After: 5`**, no job created; the rare shutdown race → **`503`**. Plus
-  `app/api/security.py` `require_trusted_origin` — **lenient** CSRF Origin check (missing Origin allowed;
-  present Origin whose host ∉ `ALLOWED_HOSTS` → `403`), wired as a route dependency on `POST /extract`.
-  Router included in `create_app()`. Suite **206 passing, 1 skipped** (196 prior + 10 new), ruff clean.
-  Approved plan: `~/.claude/plans/f16-extract-abundant-stearns.md`.
-- **Next is F17 (Dashboard layout & submission form):** `templates/base.html` (loads HTMX +
-  `static/styles.css`), `templates/index.html` (URL/prompt/schema form **+ a default-unchecked `render`
-  checkbox** with a short local-network-risk note). `app/dashboard/routes.py` `GET /` rendering
-  `index.html`; a **form-handling** POST route taking `Form(...)` fields (incl. `render: bool = False`)
-  that **reuses `require_trusted_origin`** (F16) and calls the **same** job service the API uses
-  (form-encoded, not JSON — don't point the form at the JSON `/extract`). Its response **re-renders the
-  polling container with the `every 2s` trigger** so polling restarts even if it had stopped. `Jinja2Templates`
-  is mounted on `app.state.templates` in `create_app()` (not wired yet — F17 adds it) and `StaticFiles`
-  at `/static`.
-- **F16 → F17 reuse:** the Origin check is the shared dependency `app.api.security.require_trusted_origin`
-  — import and `Depends(...)` it on the dashboard POST; do **not** re-implement. The job service the
-  dashboard calls is the same `scheduler.try_reserve()/submit()` + `store.create()` sequence; consider a
-  thin shared helper if F17 finds the orchestration duplicated (currently it lives inline in the handler).
+- **F17 built:** the dashboard shell + working submit form. `app/dashboard/routes.py` — `GET /`
+  renders `index.html`; **form-encoded** `POST /submit` (`Form(...)` fields: `url`, `prompt`,
+  `output_schema` as a JSON **string**, `provider`, `render`) reuses `require_trusted_origin` (F16),
+  parses the schema (`json.loads`, blank → `None`), builds `ExtractRequest`, and admits via the shared
+  `enqueue` helper. On success returns `_submit_result.html` (a "Job queued" note **+ an `hx-swap-oob`
+  re-render of `#jobs`** that re-arms the `every 2s` poller); bad input / at-capacity / shutting-down
+  return an **inline error fragment with HTTP `200`** (HTMX doesn't swap non-2xx) and create **no job**.
+  Templates: `base.html`, `index.html`, `_jobs_container.html` (the poll container, `oob` flag),
+  `_submit_result.html`. `static/styles.css` + **vendored `static/htmx.min.js`** (htmx 2.0.4, same-origin —
+  no CDN/SRI). `create_app()` now mounts `/static`, sets `app.state.templates`, includes the dashboard
+  router. Approved plan: `~/.claude/plans/feature-17-dashboard-quirky-stearns.md`.
+- **Shared admission helper (new):** `app/jobs/submission.py` `enqueue(request, *, scheduler, store)
+  -> Job` now owns the atomic `try_reserve()` → `create()` → `submit()` sequence; raises
+  `AtCapacityError` (gate closed, no job) or re-raises `SchedulerShuttingDown` (after `release()` +
+  `mark_error`). **F16's `/extract` handler was refactored onto it** (maps `AtCapacityError` → `429`+
+  `Retry-After`, `SchedulerShuttingDown` → `503`) — behaviour unchanged, F16 tests still green.
+- **New dependency:** `python-multipart` (added to approved list + `pyproject`/lock) — FastAPI needs it
+  to parse `Form(...)`/urlencoded bodies. Used only by `app/dashboard/`.
+- **Next is F18 (Jobs list & live status):** build `templates/_jobs_table.html` (id, status, mode,
+  timestamps) and `GET /partials/jobs` rendering it from `JobStore.list()`; **return HTTP `286`** once
+  every job is terminal (and when empty) so HTMX stops polling. The `#jobs` polling container + its
+  re-arm-on-submit are **already in place** (F17); F18 only fills the container and adds the `286` stop.
+  Until F18, `GET /partials/jobs` 404s in the browser — expected.
 - **Locked store invariants:** only **terminal** jobs are evicted (TTL from `finished_at`; `MAX_JOBS`
   drops oldest terminal); `queued`/`running` are **never** evicted; transitions enforced
   (`mark_running` only from `queued`; `mark_done`/`mark_error` only from non-terminal; `mark_error`
@@ -46,10 +46,12 @@ immediately know what is done, what is in progress, and what is next.
   `mark_*` under the lock.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F16 — `app/api/extract.py` (new), `app/api/security.py`
-  (new), `tests/test_api_extract.py` (new); `app/main.py` (modified) and these context docs. HEAD is
-  `49d5c88 3.15-Job-scheduler-concurrency-admission-shutdown` (F15 **is** committed — the prior pending
-  commit-or-proceed decision was resolved). (Reminder: per CLAUDE.md, commits never add a co-author.)
+- **Uncommitted (commit only when asked):** F17 — new `app/jobs/submission.py`, `app/dashboard/routes.py`,
+  `templates/*.html` (4), `static/styles.css`, `static/htmx.min.js`, `tests/test_dashboard.py`,
+  `tests/test_jobs_submission.py`; modified `app/api/extract.py`, `app/main.py`, `pyproject.toml`,
+  `uv.lock`, and these context docs (+ `code-standards.md` deps list). HEAD is
+  `4efd371 3.16-Extract-jobs-API-endpoints` (F16 **is** committed; the prior tracker note claiming F16
+  uncommitted was stale). (Reminder: per CLAUDE.md, commits never add a co-author.)
 
 ---
 
@@ -80,7 +82,7 @@ immediately know what is done, what is in progress, and what is next.
 - [x] 16 Extract & jobs API endpoints
 
 ### Phase 4 — Dashboard
-- [ ] 17 Dashboard layout & submission form
+- [x] 17 Dashboard layout & submission form
 - [ ] 18 Jobs list & live status
 - [ ] 19 Job detail & result viewer
 - [ ] 20 Result export
@@ -96,6 +98,14 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 17 Dashboard layout & submit form built (2026-06-23):** server-rendered shell + working
+  form. `app/dashboard/routes.py` `GET /` + form-encoded `POST /submit` (`Form(...)`, reuses
+  `require_trusted_origin`) → shared **`app/jobs/submission.py::enqueue`** (atomic reserve→create→submit,
+  raising `AtCapacityError`/`SchedulerShuttingDown`); **F16 `/extract` refactored onto `enqueue`**.
+  Success re-arms the `#jobs` poller via an `hx-swap-oob` fragment; bad input / capacity / shutdown →
+  **inline `200` error** (HTMX won't swap non-2xx), no job. **htmx 2.0.4 vendored same-origin** (no
+  CDN/SRI); added dependency **`python-multipart`**. **220 passing, 1 skipped.** (F12 decision pruned →
+  `build-journal.md`.)
 - **Feature 16 Extract & jobs API built (2026-06-23):** `app/api/extract.py` — `POST /extract`
   (`202` + `JobResponse`), `GET /jobs` (newest-first), `GET /jobs/{job_id}` (`404`). Atomic
   reserve→create→submit in the handler; **at capacity → `429` + `Retry-After`** (no job created),
@@ -131,15 +141,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   `url`+`prompt`; `status: str`; `Job` under `TYPE_CHECKING` to sever the `models ↔ jobs.models`
   cycle). Lifespan wiring deferred to F14. **174 passing, 1 skipped.** (F07 fetch-strategy decision
   pruned → `build-journal.md`.)
-- **Feature 12 Extraction engine built (2026-06-23):** `app/extraction/engine.py`
-  `extract(content, *, prompt, schema, provider: LLMProvider)` — `normalize_for_strict(schema)`
-  → `provider.extract(...)` → `validate_output` against the **original** schema, wrapping the
-  jsonschema `ValidationError` into `ProviderError("extraction did not match schema: …")`. The
-  **provider is injected by the F14 runner** (engine reads no settings, never calls the registry)
-  — a **documented deviation** from `architecture.md`'s data-flow (annotated in `build-plan.md`
-  F12) chosen for a registry-free, trivially-testable engine. `schema=None` skips validation; a
-  provider `ProviderError` propagates unchanged (runner is the boundary). **155 passing, 1
-  skipped. Phase 2 closed.** (F09 provider-interface decision pruned → `build-journal.md`.)
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
 - **The fetch contract returns a `FetchResult`** (html, mode, status, content_type, final_url) so the fallback matrix can branch — not bare HTML. The browser builds it from the **real** `page.goto()` response + `page.url`, never hardcoded `200`/`text/html`/original URL.

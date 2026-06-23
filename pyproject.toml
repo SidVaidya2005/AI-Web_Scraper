@@ -16,6 +16,7 @@ dependencies = [
     "jinja2",
     "anthropic",
     "openai",
+    "python-multipart>=0.0.32",
 ]
 
 [dependency-groups]

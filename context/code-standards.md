@@ -341,6 +341,7 @@ Approved dependencies for this project:
 - `pydantic-settings` — typed settings from env/`.env`.
 - `jsonschema[format]` — validate the LLM's returned dict against the user-supplied JSON Schema (the request `output_schema` is JSON Schema, not a Pydantic model). The `[format]` extra is required for `format` keyword checks (`email`, `uri`, …) via `FORMAT_CHECKER`; see `library-docs.md`.
 - `jinja2` — dashboard templates.
+- `python-multipart` — parse the dashboard's form-encoded submit (`Form(...)` fields); required by FastAPI/Starlette for `application/x-www-form-urlencoded` bodies. Used only by `app/dashboard/`.
 - `anthropic` — default LLM provider SDK.
 - `openai` — optional second LLM provider SDK.
 - `pytest`, `pytest-asyncio` — testing.

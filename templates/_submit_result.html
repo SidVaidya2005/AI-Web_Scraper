@@ -1,0 +1,10 @@
+{# Inline result of a form submit, swapped into #submit-result.
+   On success: a confirmation + an OOB re-render of #jobs (re-arms a stopped poller).
+   On error: a readable message (autoescaped — never trust page/user text). #}
+{% if ok %}
+<p class="result ok">Job queued: {{ job_id }}</p>
+{% set oob = True %}
+{% include "_jobs_container.html" %}
+{% else %}
+<p class="result error">{{ message }}</p>
+{% endif %}

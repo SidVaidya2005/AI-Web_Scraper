@@ -1,0 +1,10 @@
+{# The live-jobs polling container. F18 fills it via GET /partials/jobs and adds the
+   286 stop-polling logic; F17 only renders the empty container with its trigger.
+   Pass `oob=True` to re-arm a stopped poller from the submit response (out-of-band
+   swap by matching id). #}
+<div id="jobs"{% if oob %} hx-swap-oob="true"{% endif %}
+     hx-get="/partials/jobs"
+     hx-trigger="load, every 2s"
+     hx-swap="innerHTML">
+  <p class="jobs-empty">No jobs yet — submit one above.</p>
+</div>

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="submit">
+  <h2>New extraction</h2>
+  {# Form-encoded POST to the dashboard's own handler (not the JSON /extract route).
+     On success the response re-arms the #jobs poller via an out-of-band swap; on a
+     validation/capacity error it renders an inline message into #submit-result. #}
+  <form hx-post="/submit" hx-target="#submit-result" hx-swap="innerHTML">
+    <label>
+      URL
+      <input type="url" name="url" required placeholder="https://example.com/products" />
+    </label>
+    <label>
+      What to extract
+      <textarea name="prompt" rows="3" required
+                placeholder="Get each product's name and price"></textarea>
+    </label>
+    <label>
+      Output schema <span class="muted">(optional JSON Schema, root type object)</span>
+      <textarea name="output_schema" rows="4"
+                placeholder='{"type": "object", "properties": {"items": {"type": "array"}}}'></textarea>
+    </label>
+    <label>
+      Provider <span class="muted">(optional: anthropic | openai)</span>
+      <input type="text" name="provider" placeholder="anthropic" />
+    </label>
+    <label class="render-opt">
+      <input type="checkbox" name="render" value="true" />
+      Render with a headless browser (for JavaScript-heavy pages)
+    </label>
+    <p class="risk-note">
+      Rendering opts out of IP-pinning and carries a residual SSRF / DNS-rebinding
+      risk — only enable it for hosts you trust on your local network.
+    </p>
+    <button type="submit">Extract</button>
+  </form>
+  <div id="submit-result"></div>
+</section>
+
+<section class="jobs">
+  <h2>Jobs</h2>
+  {% include "_jobs_container.html" %}
+</section>
+{% endblock %}
