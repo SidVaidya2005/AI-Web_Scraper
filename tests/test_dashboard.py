@@ -267,3 +267,135 @@ def test_partials_jobs_integration_shows_submitted_job(
     assert resp.status_code == 200  # the submitted job is still queued
     assert "jobs-table" in resp.text
     assert "status-queued" in resp.text
+
+
+# --- F19: GET /jobs/{id}/view (single-job detail page) ---
+
+
+def _detail_job(
+    status: JobStatus,
+    *,
+    result: dict | None = None,
+    error: str | None = None,
+    mode: str | None = None,
+    started: bool = False,
+    finished: bool = False,
+) -> Job:
+    """Build a Job carrying a result/error for the detail-page tests."""
+    return Job(
+        id=str(uuid.uuid4()),
+        status=status,
+        request=ExtractRequest(url="https://example.com/", prompt="get the title"),
+        mode=mode,
+        result=result,
+        error=error,
+        created_at=_STAMP,
+        started_at=_STAMP if started else None,
+        finished_at=_STAMP if finished else None,
+    )
+
+
+def _patch_get(monkeypatch: pytest.MonkeyPatch, job: Job | None) -> None:
+    """Make the live store's `get()` return `job` (None to exercise the 404 path)."""
+
+    async def _get(job_id: str) -> Job | None:
+        return job
+
+    monkeypatch.setattr(app.state.job_store, "get", _get)
+
+
+def test_job_detail_done_renders_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _detail_job(
+        JobStatus.done,
+        result={"title": "Hello"},
+        mode="http",
+        started=True,
+        finished=True,
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/view")
+    body = resp.text
+    assert resp.status_code == 200
+    assert job.id in body
+    assert "result-json" in body  # the <pre> result block rendered
+    assert "title" in body and "Hello" in body
+
+
+def test_job_detail_error_renders_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _detail_job(
+        JobStatus.error, error="fetch failed: timeout", started=True, finished=True
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/view")
+    assert resp.status_code == 200
+    assert "fetch failed: timeout" in resp.text
+
+
+def test_job_detail_escapes_untrusted_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Untrusted scraped content in the result must never inject live HTML.
+    job = _detail_job(
+        JobStatus.done,
+        result={"x": "<script>alert(1)</script>"},
+        mode="http",
+        started=True,
+        finished=True,
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/view")
+    body = resp.text
+    assert resp.status_code == 200
+    assert "<script>alert(1)</script>" not in body  # not rendered as live markup
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body  # escaped to inert text
+
+
+def test_job_detail_escapes_untrusted_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _detail_job(
+        JobStatus.error,
+        error="<img src=x onerror=alert(1)>",
+        started=True,
+        finished=True,
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/view")
+    body = resp.text
+    assert resp.status_code == 200
+    assert "<img src=x onerror=alert(1)>" not in body
+    assert "&lt;img" in body
+
+
+def test_job_detail_unknown_id_returns_404_html(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, None)
+        resp = client.get("/jobs/does-not-exist/view")
+    assert resp.status_code == 404
+    assert "text/html" in resp.headers["content-type"]
+    assert "Job not found" in resp.text  # the styled HTML state, not JSON
+
+
+def test_job_detail_running_shows_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = _detail_job(JobStatus.running, mode="browser", started=True)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/view")
+    body = resp.text
+    assert resp.status_code == 200
+    assert "in progress" in body.lower()
+    assert "result-json" not in body  # no result/error block while non-terminal
+
+
+def test_jobs_table_links_to_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _job(JobStatus.queued)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_list(monkeypatch, [job])
+        resp = client.get("/partials/jobs")
+    assert f'href="/jobs/{job.id}/view"' in resp.text

@@ -12,29 +12,34 @@ immediately know what is done, what is in progress, and what is next.
 ## Current Status
 
 **Phase:** Phase 4 — Dashboard **in progress**
-**Last completed:** 18 Jobs list & live status (2026-06-23)
-**Next:** 19 Job detail & result viewer (Phase 4 — Dashboard)
+**Last completed:** 19 Job detail & result viewer (2026-06-23)
+**Next:** 20 Result export (Phase 4 — Dashboard)
 
 **Carry-over into next session:**
-- **F18 built:** the live jobs table + `286` stop-polling. New `templates/_jobs_table.html` (columns:
-  full-UUID id, status, mode, created/started/finished as UTC `HH:MM:SS`, `—` when unset; empty state
-  "No jobs yet"). New `GET /partials/jobs` in `app/dashboard/routes.py` renders it from
-  `JobStore.list()` (already newest-first) and returns **HTTP `286`** when `all(job.is_terminal ...)`
-  (so empty → `286` too, since `all([])` is True) else `200`. `286` both **swaps the body and stops the
-  poll** (verified via Context7: htmx default `responseHandling` `{"code":"[23]..","swap":true}`).
-  `_STOP_POLLING_STATUS = 286` constant added. Table/status CSS appended to `static/styles.css`
-  (`.jobs-table`, `.status-*`). The F17 `#jobs` container + submit re-arm are **untouched**. Approved
-  plan: `~/.claude/plans/feature-18-jobs-happy-papert.md`.
-- **F18 test trick (reuse for F19):** monkeypatch `app.state.job_store.list` to return crafted `Job`s
-  for deterministic endpoint tests — **safe at shutdown** because `Scheduler._terminalize_survivors`
-  calls `mark_error` on ids absent from the real store and that `JobStateError` is swallowed. One
-  integration test stubs `runner.run_job` to a no-op so a real submitted job stays `queued`.
-- **Next is F19 (Job detail & result viewer):** build `templates/job_detail.html` (renders the result
-  JSON, or the error, **autoescaped** — this is the feature that introduces untrusted-content rendering,
-  so no `| safe`) and `GET /jobs/{id}/view` reading from `JobStore` (404 when unknown). **Wire the
-  job-id link here** — F18 left the id as plain text precisely so F19 turns it into an
-  `<a href="/jobs/{id}/view">`. Verify: a done job renders its result; an error job renders its message;
-  a scraped-content payload is escaped (no HTML injection).
+- **F19 built:** the single-job detail page. New `templates/job_detail.html` (`extends base.html`):
+  request summary (url, prompt, provider, render), status/mode/timestamps, then the result `<pre>`
+  (done) / error message (error) / "still in progress" note (queued/running). New
+  `GET /jobs/{job_id}/view` in `app/dashboard/routes.py` reads `JobStore.get()`; an unknown/evicted id
+  renders the template's **not-found state with HTTP 404** (styled HTML, not JSON). Result is
+  pretty-printed in the handler (`json.dumps(indent=2, ensure_ascii=False)`) and rendered in an
+  **autoescaped** `<pre>` — no `| safe`. F18's plain-text id is now an `<a href="/jobs/{id}/view">` in
+  `_jobs_table.html`. Detail-page CSS appended to `static/styles.css` (`.detail-meta`,
+  `pre.result-json`, `.back`). Approved plan: `~/.claude/plans/f19-job-detail-calm-hellman.md`.
+- **F19 escaping note (important):** Jinja autoescapes **double quotes too** (`"` → `&#34;`), so the
+  rendered `result_json` shows escaped quotes in the raw HTML (renders fine in a browser). Tests assert
+  on word fragments + the escaped `&lt;script&gt;...` form, not literal JSON punctuation. The XSS test
+  injects `<script>alert(1)</script>` into `result` and asserts the raw tag is absent and the escaped
+  form present.
+- **Test trick (reused, extended for F19):** monkeypatch `app.state.job_store.get` (and `.list`) to
+  return crafted `Job`s for deterministic endpoint tests — safe at shutdown because
+  `Scheduler._terminalize_survivors` swallows the `JobStateError` for ids absent from the real store.
+  A `_detail_job(...)` helper builds a Job carrying a result/error.
+- **Next is F20 (Result export):** `GET /jobs/{id}/export?format=json|csv` streaming a file response
+  generated on the fly (no persistence); add export buttons to `job_detail.html`. CSV rules (explicit):
+  flatten a list-of-objects **envelope** to rows with a stable column order (union of keys); single
+  object → one row; empty result → header only; nested values → JSON-encoded cells; **escape
+  formula-injection** (cells leading with `= + - @` are prefixed). Verify: JSON export equals the stored
+  result; CSV flattens tabular/nested/empty/heterogeneous correctly and neutralizes a `=`-leading cell.
 - **Locked store invariants:** only **terminal** jobs are evicted (TTL from `finished_at`; `MAX_JOBS`
   drops oldest terminal); `queued`/`running` are **never** evicted; transitions enforced
   (`mark_running` only from `queued`; `mark_done`/`mark_error` only from non-terminal; `mark_error`
@@ -42,10 +47,10 @@ immediately know what is done, what is in progress, and what is next.
   `mark_*` under the lock.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F18 — new `templates/_jobs_table.html`; modified
-  `app/dashboard/routes.py`, `static/styles.css`, `tests/test_dashboard.py`, and these context docs.
-  HEAD is `80ecb0a 4.17-Dashboard-layout-submission-form` (F17 is committed). (Reminder: per CLAUDE.md,
-  commits never add a co-author.)
+- **Uncommitted (commit only when asked):** F19 — new `templates/job_detail.html`; modified
+  `app/dashboard/routes.py`, `templates/_jobs_table.html`, `static/styles.css`,
+  `tests/test_dashboard.py`, and these context docs. HEAD is `a891721 4.18-Jobs-list-&-live-status`
+  (F18 is committed). (Reminder: per CLAUDE.md, commits never add a co-author.)
 
 ---
 
@@ -78,7 +83,7 @@ immediately know what is done, what is in progress, and what is next.
 ### Phase 4 — Dashboard
 - [x] 17 Dashboard layout & submission form
 - [x] 18 Jobs list & live status
-- [ ] 19 Job detail & result viewer
+- [x] 19 Job detail & result viewer
 - [ ] 20 Result export
 
 ### Phase 5 — Hardening & Extras
@@ -92,6 +97,13 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 19 Job detail & result viewer built (2026-06-23):** `templates/job_detail.html`
+  (`extends base.html`) + `GET /jobs/{job_id}/view` reading `JobStore.get()`. Unknown id → **styled
+  HTML 404** (template not-found state, not JSON); **static snapshot** (no polling — a running job shows
+  an in-progress note). Result pretty-printed in the handler (`json.dumps(indent=2)`) and rendered in an
+  **autoescaped** `<pre>` — first untrusted-content render, no `| safe`; an injected `<script>` comes
+  back `&lt;script&gt;`. F18's plain-text job id is now an `<a href="/jobs/{id}/view">`. **232 passing,
+  1 skipped.** (F14 runner decision pruned → `build-journal.md`.)
 - **Feature 18 Jobs list & live status built (2026-06-23):** `templates/_jobs_table.html` (id, status,
   mode, created/started/finished UTC `HH:MM:SS`) + `GET /partials/jobs` rendering it from
   `JobStore.list()`; returns **HTTP `286`** when `all(job.is_terminal ...)` (empty → `286` too) else
@@ -123,16 +135,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   admission → drains within `SHUTDOWN_GRACE_SECONDS` → cancels stragglers → sweeps `store.list()` marking
   non-terminal jobs `error`; lifespan drains **before** `browser_manager.aclose()`. Reuses F14's
   `RunnerState`. **196 passing, 1 skipped.** (Pre-code F15 spec bullet pruned → `build-journal.md`.)
-- **Feature 14 Async job runner built (2026-06-23):** `app/jobs/runner.py`
-  `run_job(job_id, *, app_state)` — the pipeline driver and **top-level error boundary** (never
-  raises): `mark_running → fetch_service.fetch(str(url)) → cleaner.clean → registry.get_provider →
-  engine.extract → mark_done`. Known errors (`ProviderError`/`FetchError`+subclasses/`ValidationError`)
-  → `mark_error(str(exc))`; unknown → generic non-leaky message (traceback logged). `app_state` typed by
-  a local **`RunnerState` Protocol** (`job_store`/`browser_manager`/`settings`); a best-effort
-  **`_terminalize`** swallows `JobStateError` so an already-terminal/missing job can't break "never
-  raises". Provider is **built in the runner** (`registry.get_provider(settings, override=request.provider)`)
-  and injected (F12 contract). Lifespan now wires `app.state.job_store`. **185 passing, 1 skipped.**
-  (F10 Anthropic-provider decision pruned → `build-journal.md`.)
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
 - **The fetch contract returns a `FetchResult`** (html, mode, status, content_type, final_url) so the fallback matrix can branch — not bare HTML. The browser builds it from the **real** `page.goto()` response + `page.url`, never hardcoded `200`/`text/html`/original URL.

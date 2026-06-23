@@ -68,6 +68,31 @@ async def jobs_partial(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/jobs/{job_id}/view", response_class=HTMLResponse)
+async def job_detail(job_id: str, request: Request) -> HTMLResponse:
+    """Render one job's detail page (result/error + metadata), or a 404 page.
+
+    A read-only `GET`, so no Origin check (that guards state-changing POSTs only).
+    An unknown/evicted id renders the template's not-found state with HTTP 404 rather
+    than JSON, since this is a browser-facing page. The result dict is pretty-printed
+    here and rendered inside an autoescaped `<pre>` — untrusted scraped content stays
+    inert (no `| safe`).
+    """
+    job = await request.app.state.job_store.get(job_id)
+    if job is None:
+        return _templates(request).TemplateResponse(
+            request, "job_detail.html", {"job": None}, status_code=404
+        )
+    result_json = (
+        json.dumps(job.result, indent=2, ensure_ascii=False)
+        if job.result is not None
+        else None
+    )
+    return _templates(request).TemplateResponse(
+        request, "job_detail.html", {"job": job, "result_json": result_json}
+    )
+
+
 @router.post(
     "/submit",
     response_class=HTMLResponse,

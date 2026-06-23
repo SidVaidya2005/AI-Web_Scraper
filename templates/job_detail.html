@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{# Single-job detail page (F19). Renders the job's request summary, lifecycle state,
+   and its structured result (or error). result/error are untrusted scraped content —
+   every field is autoescaped, never `| safe`; result_json is rendered as inert text
+   inside <pre>. An unknown/evicted id arrives here with `job = None` (HTTP 404). #}
+
+{% block content %}
+<p class="back"><a href="/">← Back to dashboard</a></p>
+
+{% if not job %}
+<section class="detail">
+  <h2>Job not found</h2>
+  <p class="muted">It may have been evicted, or the id is wrong.</p>
+</section>
+{% else %}
+<section class="detail">
+  <h2>Job detail</h2>
+
+  <dl class="detail-meta">
+    <dt>Job id</dt>
+    <dd class="job-id">{{ job.id }}</dd>
+    <dt>Status</dt>
+    <dd><span class="status status-{{ job.status }}">{{ job.status }}</span></dd>
+    <dt>Mode</dt>
+    <dd>{{ job.mode or "—" }}</dd>
+    <dt>URL</dt>
+    <dd>{{ job.request.url }}</dd>
+    <dt>Prompt</dt>
+    <dd>{{ job.request.prompt }}</dd>
+    <dt>Provider</dt>
+    <dd>{{ job.request.provider or "default" }}</dd>
+    <dt>Render</dt>
+    <dd>{{ "yes" if job.request.render else "no" }}</dd>
+    <dt>Created</dt>
+    <dd>{{ job.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}</dd>
+    <dt>Started</dt>
+    <dd>{{ job.started_at.strftime("%Y-%m-%d %H:%M:%S UTC") if job.started_at else "—" }}</dd>
+    <dt>Finished</dt>
+    <dd>{{ job.finished_at.strftime("%Y-%m-%d %H:%M:%S UTC") if job.finished_at else "—" }}</dd>
+  </dl>
+
+  {% if job.status == "done" %}
+  <h3>Result</h3>
+  <pre class="result-json">{{ result_json }}</pre>
+  {% elif job.status == "error" %}
+  <h3>Error</h3>
+  <p class="result error">{{ job.error }}</p>
+  {% else %}
+  <p class="muted">Still in progress — refresh, or watch the dashboard table.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

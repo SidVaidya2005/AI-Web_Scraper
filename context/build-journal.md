@@ -1186,6 +1186,66 @@ new exception types; container/submit wiring from F17 untouched. Approved plan:
 
 ---
 
+## Phase 4 · Feature 19 — Job detail & result viewer  *(2026-06-23)*
+
+**Built:** `templates/job_detail.html` (new full page, `extends base.html` — the single-job
+detail view); `GET /jobs/{job_id}/view` added to `app/dashboard/routes.py`; the job-id cell in
+`templates/_jobs_table.html` turned into `<a href="/jobs/{id}/view">`; detail CSS appended to
+`static/styles.css` (`.back`, `.detail-meta`, `pre.result-json`); 7 new tests in
+`tests/test_dashboard.py`. No new dependencies; no new exception types. Approved plan:
+`~/.claude/plans/f19-job-detail-calm-hellman.md`.
+
+**Decisions** (architect session, developer-confirmed):
+- **Unknown/evicted id → styled HTML 404, not JSON.** The detail route returns the
+  `job_detail.html` template with `job=None` and `status_code=404`, which renders a small
+  "Job not found" state + a back link. One template owns both the found and not-found states
+  (keeps the thin dashboard's file count low). This deliberately diverges from the API's
+  `GET /jobs/{id}` (which raises a JSON `HTTPException(404)`) because this route is browser-facing.
+- **Static snapshot, no polling.** The page renders the job's state once at load; a
+  `queued`/`running` job shows a "still in progress — refresh, or watch the dashboard table" note.
+  No HTMX polling here — in scope per build-plan F19, which only specifies rendering result/error.
+- **Pretty-print in the handler, render in an autoescaped `<pre>`.**
+  `result_json = json.dumps(job.result, indent=2, ensure_ascii=False)` is computed in the route
+  (the `json` import already existed in `routes.py`) and rendered as `{{ result_json }}` inside
+  `<pre class="result-json">`. This is the **first feature to render untrusted scraped content**
+  (LLM output over page content), so the security crux is Jinja autoescaping with **no `| safe`** —
+  an embedded `<script>` becomes inert `&lt;script&gt;` text. No `tojson` needed.
+- **Surfaced request metadata too** (url, prompt, provider→"default" when unset, render→yes/no) plus
+  status/mode/timestamps (`%Y-%m-%d %H:%M:%S UTC`, `—` when unset) via a `<dl class="detail-meta">`,
+  so the page is a real "detail" view rather than just a JSON dump.
+- **No Origin/CSRF dependency** — a read-only `GET`, unlike the state-changing `POST /submit`.
+
+**Gotchas:**
+- **Jinja autoescapes double quotes too** (`"` → `&#34;`, also `'` → `&#39;`), so the rendered
+  `result_json` shows escaped quotes in the **raw HTML** (a browser displays them as normal quotes).
+  The done-job test therefore asserts on word fragments (`"title"`, `"Hello"`) and the presence of the
+  `result-json` block, not literal JSON punctuation. The XSS test asserts the *escaped* form
+  `&lt;script&gt;alert(1)&lt;/script&gt;` is present and the raw `<script>alert(1)</script>` is absent.
+- **`base.html` emits a literal `<script src="/static/htmx.min.js">` tag**, so a naive
+  `"<script" not in body` assertion would false-positive. The XSS assertions use the full
+  `<script>alert(1)</script>` payload string, which is specific enough to avoid the htmx tag.
+- **`StrEnum` compares equal to its value**, so `{% if job.status == "done" %}` works directly in the
+  template (no `.value` needed); `status-{{ job.status }}` also renders the bare value for the CSS class.
+- **No route collision:** `GET /jobs/{job_id}/view` (3 segments) does not match the API's
+  `GET /jobs/{job_id}` (2 segments) — Starlette path params don't span `/`.
+- **ruff E501** on one test call (`_detail_job(...)` one-liner at 91 chars); `ruff format` rewrapped it.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 57 files formatted (clean).
+- `uv run pytest -q` → **232 passed, 1 skipped** (225 prior + 7 new), exit 0. The skip is the
+  Chromium-gated browser integration test; one pre-existing Starlette/httpx TestClient deprecation
+  warning, unrelated.
+- Confirmed by test: a `done` job renders its result in the `<pre>` (200); an `error` job renders its
+  message (200); a `result`/`error` carrying `<script>`/`<img onerror>` is **escaped** (raw markup
+  absent, `&lt;…` present) — no HTML injection; an unknown id → **404** with `text/html` and the
+  "Job not found" state (not JSON); a `running` job → 200 with the in-progress note and **no**
+  result/error block; the partial jobs table now contains `href="/jobs/{id}/view"`.
+- Invariants held (grep-verified): `app/dashboard/routes.py` imports no `httpx`/`playwright`/LLM SDK and
+  no `os`/env; no `| safe` in any template (only a comment in `job_detail.html` *naming* the rule);
+  no new dependency.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

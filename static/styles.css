@@ -160,3 +160,41 @@ button {
   background: var(--err-bg);
   color: var(--err-fg);
 }
+
+/* Job detail page (F19). */
+.back {
+  margin-bottom: 1rem;
+}
+
+.detail-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0 0 1.5rem;
+}
+
+.detail-meta dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.detail-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-meta dd.job-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+pre.result-json {
+  background: #f3f4f6;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.8rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
