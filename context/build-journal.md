@@ -958,6 +958,92 @@ exception type (`SchedulerShuttingDown`). Approved plan:
 
 ---
 
+## Phase 3 · Feature 16 — Extract & jobs API endpoints  *(2026-06-23)*
+
+**Built:** `app/api/extract.py` (`router` with `POST /extract`, `GET /jobs`,
+`GET /jobs/{job_id}`); `app/api/security.py` (`require_trusted_origin` dependency);
+router wired into `create_app()` in `app/main.py`; `tests/test_api_extract.py` (10
+tests). No new dependencies (FastAPI/Starlette already in the stack); no new exception
+types. **Closes Phase 3.** Approved plan: `~/.claude/plans/f16-extract-abundant-stearns.md`.
+
+**Decisions** (architect session, developer-confirmed):
+- **Origin check = lenient + shared dependency.** `require_trusted_origin` lives in a new
+  `app/api/security.py` (not inline) because F17's dashboard POST reuses it (a second
+  consumer is certain per the build-plan). **Lenient policy** (chosen over strict): a
+  *missing* `Origin` is allowed so the documented non-browser clients (curl/httpx/
+  server-to-server) keep working; a *present* `Origin` whose host ∉ `ALLOWED_HOSTS` →
+  `403`. Wired as a route `dependencies=[Depends(require_trusted_origin)]` on
+  `POST /extract` only (GETs are not state-changing).
+- **At capacity → `429 + Retry-After`** (chosen over `503`; architecture lists both).
+  `_RETRY_AFTER_SECONDS = 5` module constant. The **distinct** shutdown-race path
+  (`submit()` → `SchedulerShuttingDown`) stays **`503` "server shutting down"** — a
+  "going away" signal, matching the canonical `code-standards.md` snippet. So: backpressure
+  = 429, draining = 503.
+- **Handler owns the exact canonical orchestration** from `architecture.md` /
+  `code-standards.md`: `try_reserve()` (atomic, before `create`) → `try: await
+  store.create(req) except BaseException: release(); raise` → `try: scheduler.submit(job.id)
+  except SchedulerShuttingDown: release(); await store.mark_error(..., "server shutting
+  down"); raise 503 from None`. No new flow invented.
+- **Status codes as integer literals** (`202`/`429`/`503`/`404`/`403`) + `Retry-After`
+  via `HTTPException(headers=...)` — matches `health.py` house style; no `from fastapi
+  import status`.
+- **Origin dependency reads `request.app.state.settings`** (lifespan-set, == cached
+  `get_settings()`), consistent with how the handlers read `app.state.scheduler` /
+  `.job_store`. `urlsplit(origin).hostname` vs plain membership in `allowed_hosts`
+  (wildcard `ALLOWED_HOSTS` entries aren't expanded — a v1 simplification; default is
+  `127.0.0.1,localhost`).
+- **One test file** `tests/test_api_extract.py` exercises the Origin guard *through* the
+  route (its only real consumer) rather than a separate `test_api_security.py` — same
+  test-per-module convention, no unit test for a 6-line guard.
+- **`provider` not constrained at the boundary** (locked F10/F11): an unknown provider
+  string isn't a 422; it becomes a runtime job `error` via the registry's `ProviderError`.
+
+**Gotchas:**
+- **`B904` on the 503 re-raise.** Ruff's `B` ruleset flags `raise HTTPException(...)`
+  inside the `except SchedulerShuttingDown` block; `SchedulerShuttingDown` is *expected
+  control flow*, not an error to chain, so `raise ... from None` is the correct fix (the
+  canonical code-standards snippet omits it, but it's illustrative — ruff is the style
+  authority).
+- **Per-test store isolation comes free from the lifespan.** `app` is the module-level
+  singleton, but each `with TestClient(app)` re-runs startup, which reassigns
+  `app.state.job_store`/`.scheduler` — so a fresh store per test without a fixture. Tests
+  that assert "no job created" (`429`, `403`) rely on this (`GET /jobs == []`).
+- **Background-task polling under the sync TestClient.** `scheduler.submit` schedules an
+  `asyncio.create_task`; after the `202` returns, the task runs on the TestClient portal's
+  loop. A bounded `_poll_until_terminal` loop on `GET /jobs/{id}` pumps that loop and
+  observes the stubbed runner reach `done` (converges in 1–2 GETs). No `sleep`.
+- **Stub the runner to stay offline.** Any successful-submit test monkeypatches
+  `app.jobs.runner.run_job` (the established F15 seam, called module-qualified in
+  `scheduler._run`) with a fake that `mark_running` → `mark_done` — otherwise the real
+  pipeline would hit `example.com`. The `422`/`403`/`429` tests need no stub (no job runs).
+- **Forcing the capacity branch deterministically** = `monkeypatch.setattr(app.state.
+  scheduler, "try_reserve", lambda: False)` after entering the client, so the test doesn't
+  depend on the configured `MAX_QUEUED_JOBS`. The shutdown-race test monkeypatches
+  `scheduler.submit` to raise `SchedulerShuttingDown` and asserts the job is `error` and
+  `scheduler._reserved == 0` (slot released).
+- **Two `E501` overflows** (long inline comments / a one-line dict-spread `post`) — fixed
+  by reflowing the comment and hoisting the payload to a local; no `noqa`.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 53 files
+  formatted.
+- `uv run pytest -q` → **206 passed, 1 skipped** (196 prior + 10 new), exit 0. The skip is
+  the Chromium-gated browser integration test; one pre-existing Starlette/httpx TestClient
+  deprecation warning, unrelated.
+- Confirmed by test: submit → `202` + `JobResponse(status="queued")` and polls to `done`
+  with the stubbed result/`mode`; `GET /jobs` newest-first; unknown id → `404`;
+  root-non-object `output_schema` → `422` and a valid subset schema → `202`; at capacity →
+  `429` + `Retry-After: 5` with **no job created**; shutdown race → `503` with the job
+  terminalized `error` ("server shutting down") and the reserved slot released; a
+  disallowed Origin → `403` (no job), an allowed/missing Origin → `202`.
+- Invariants held: handler carries no scraping/cleaning/LLM logic (validate → reserve →
+  call the job service → shape `JobResponse`); admission reserved atomically before
+  `create()` and released on every failure path; `SchedulerShuttingDown` caught
+  specifically (never broad `BaseException`); `app/api/` imports no `httpx`/`playwright`/
+  LLM SDK and no `os`/env.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

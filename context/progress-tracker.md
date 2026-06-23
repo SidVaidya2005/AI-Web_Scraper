@@ -11,35 +11,34 @@ immediately know what is done, what is in progress, and what is next.
 
 ## Current Status
 
-**Phase:** Phase 3 — Jobs & API (in progress)
-**Last completed:** 15 Job scheduler — concurrency, admission & shutdown (2026-06-23)
-**Next:** 16 Extract & jobs API endpoints (Phase 3 — Jobs & API)
+**Phase:** Phase 3 — Jobs & API **complete** → Phase 4 — Dashboard next
+**Last completed:** 16 Extract & jobs API endpoints (2026-06-23)
+**Next:** 17 Dashboard layout & submission form (Phase 4 — Dashboard)
 
 **Carry-over into next session:**
-- **F15 built:** `app/jobs/scheduler.py` — `Scheduler` (`try_reserve`/`release`/`submit`/`shutdown`) +
-  `SchedulerShuttingDown`. **Two bounds:** a `MAX_CONCURRENT_JOBS` semaphore (running subset) **and** a
-  synchronous atomic `try_reserve()` (plain-`int` `_reserved`, check-and-increment with **no `await`
-  between**) capping in-flight+waiting at `MAX_QUEUED_JOBS` (returns False at cap or while draining).
-  `submit()` is **sync**, `create_task`s `_run` and **retains the ref** (no fire-and-forget); `_run` =
-  `try: async with sem: await runner.run_job(...) finally: self.release()` → exactly one release per
-  task, even on cancel. `shutdown()`: `_draining=True` → `asyncio.wait(grace)` → cancel stragglers →
-  `gather` → sweep `store.list()` marking non-terminal jobs `error` ("server shutting down"). Lifespan
-  wires `app.state.scheduler` and **drains BEFORE `browser_manager.aclose()`**. Suite **196 passing,
-  1 skipped** (185 prior + 11 new). Approved plan: `~/.claude/plans/f15-job-scheduler-woolly-dragonfly.md`.
-- **Next is F16 (Extract & jobs API endpoints):** `app/api/extract.py` — `POST /extract` (`202` +
-  `job_id`; `503`/`429` when `scheduler.try_reserve()` returns False — atomic, **before** `create()`),
-  `GET /jobs/{id}`, `GET /jobs`. The handler owns the orchestration F15 left to it:
-  `try_reserve()` → `try: job = await store.create(req) except BaseException: release(); raise` →
-  `try: scheduler.submit(job.id) except SchedulerShuttingDown: release(); await store.mark_error(job.id,
-  "server shutting down"); raise 503`. Reject root-non-object / out-of-subset `output_schema` with `422`
-  (already wired via the `ExtractRequest` `@field_validator` → `InvalidSchemaError(ValueError)` from F11).
-  Add the **Origin check on `POST /extract`** (state-changing; v1 CSRF baseline alongside the Host
-  allow-list). Return the declared `JobResponse` (`from_job`). Verify with TestClient (stub the runner).
-- **F15 → F16 contract:** the scheduler exposes `try_reserve()` (sync bool), `release()` (sync),
-  `submit(job_id)` (sync; raises `SchedulerShuttingDown` only while draining), `shutdown()` (async).
-  `run_job` already owns all error handling and never raises; the scheduler manages
-  concurrency/admission/lifecycle only. The handler is the **only** place reserve→create→submit is
-  orchestrated.
+- **F16 built:** `app/api/extract.py` — `POST /extract` (`202` + `JobResponse`), `GET /jobs`
+  (newest-first `list[JobResponse]`), `GET /jobs/{job_id}` (`404` if unknown/evicted). Handler runs the
+  canonical orchestration: `try_reserve()` → `try: await store.create(req) except BaseException:
+  release(); raise` → `try: scheduler.submit(job.id) except SchedulerShuttingDown: release(); await
+  store.mark_error(..., "server shutting down"); raise 503 from None`. **At capacity** (`try_reserve()`
+  False) → **`429` + `Retry-After: 5`**, no job created; the rare shutdown race → **`503`**. Plus
+  `app/api/security.py` `require_trusted_origin` — **lenient** CSRF Origin check (missing Origin allowed;
+  present Origin whose host ∉ `ALLOWED_HOSTS` → `403`), wired as a route dependency on `POST /extract`.
+  Router included in `create_app()`. Suite **206 passing, 1 skipped** (196 prior + 10 new), ruff clean.
+  Approved plan: `~/.claude/plans/f16-extract-abundant-stearns.md`.
+- **Next is F17 (Dashboard layout & submission form):** `templates/base.html` (loads HTMX +
+  `static/styles.css`), `templates/index.html` (URL/prompt/schema form **+ a default-unchecked `render`
+  checkbox** with a short local-network-risk note). `app/dashboard/routes.py` `GET /` rendering
+  `index.html`; a **form-handling** POST route taking `Form(...)` fields (incl. `render: bool = False`)
+  that **reuses `require_trusted_origin`** (F16) and calls the **same** job service the API uses
+  (form-encoded, not JSON — don't point the form at the JSON `/extract`). Its response **re-renders the
+  polling container with the `every 2s` trigger** so polling restarts even if it had stopped. `Jinja2Templates`
+  is mounted on `app.state.templates` in `create_app()` (not wired yet — F17 adds it) and `StaticFiles`
+  at `/static`.
+- **F16 → F17 reuse:** the Origin check is the shared dependency `app.api.security.require_trusted_origin`
+  — import and `Depends(...)` it on the dashboard POST; do **not** re-implement. The job service the
+  dashboard calls is the same `scheduler.try_reserve()/submit()` + `store.create()` sequence; consider a
+  thin shared helper if F17 finds the orchestration duplicated (currently it lives inline in the handler).
 - **Locked store invariants:** only **terminal** jobs are evicted (TTL from `finished_at`; `MAX_JOBS`
   drops oldest terminal); `queued`/`running` are **never** evicted; transitions enforced
   (`mark_running` only from `queued`; `mark_done`/`mark_error` only from non-terminal; `mark_error`
@@ -47,14 +46,10 @@ immediately know what is done, what is in progress, and what is next.
   `mark_*` under the lock.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F15 — `app/jobs/scheduler.py` (new),
-  `tests/test_jobs_scheduler.py` (new); `app/main.py`, `tests/test_main.py` (modified) and these context
-  docs. HEAD is `60aaa19 3.14-Async-job-runner`. F12/F13/F14 are **committed** (the earlier "uncommitted
-  F12–F14" note was stale — verified via `git log`). (Reminder: per CLAUDE.md, commits never add a
-  co-author.)
-- **OPEN — pending decision:** session ended right after F15 verified (196 passing / 1 skipped, ruff
-  clean). Developer was asked "commit F15 now, or move on to F16?" and has **not** answered yet — decide
-  this first next session before starting F16.
+- **Uncommitted (commit only when asked):** F16 — `app/api/extract.py` (new), `app/api/security.py`
+  (new), `tests/test_api_extract.py` (new); `app/main.py` (modified) and these context docs. HEAD is
+  `49d5c88 3.15-Job-scheduler-concurrency-admission-shutdown` (F15 **is** committed — the prior pending
+  commit-or-proceed decision was resolved). (Reminder: per CLAUDE.md, commits never add a co-author.)
 
 ---
 
@@ -82,7 +77,7 @@ immediately know what is done, what is in progress, and what is next.
 - [x] 13 In-memory job store
 - [x] 14 Async job runner
 - [x] 15 Job scheduler — concurrency, admission & shutdown
-- [ ] 16 Extract & jobs API endpoints
+- [x] 16 Extract & jobs API endpoints
 
 ### Phase 4 — Dashboard
 - [ ] 17 Dashboard layout & submission form
@@ -101,6 +96,14 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 16 Extract & jobs API built (2026-06-23):** `app/api/extract.py` — `POST /extract`
+  (`202` + `JobResponse`), `GET /jobs` (newest-first), `GET /jobs/{job_id}` (`404`). Atomic
+  reserve→create→submit in the handler; **at capacity → `429` + `Retry-After`** (no job created),
+  shutdown race → `503` (job terminalized, slot released). New `app/api/security.py`
+  `require_trusted_origin` — **lenient** CSRF Origin check (missing Origin allowed; present host ∉
+  `ALLOWED_HOSTS` → `403`), a **shared** route dependency F17's dashboard POST reuses. Router wired into
+  `create_app()`. **206 passing, 1 skipped. Phase 3 closed.** (F11 extraction-schemas decision pruned →
+  `build-journal.md`.)
 - **Feature 15 Job scheduler built (2026-06-23):** `app/jobs/scheduler.py` `Scheduler` +
   `SchedulerShuttingDown`. **Two bounds:** `MAX_CONCURRENT_JOBS` semaphore (running) **and** a
   synchronous atomic `try_reserve()` (`int` check-and-increment, no `await`) capping in-flight+waiting
@@ -137,16 +140,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   F12) chosen for a registry-free, trivially-testable engine. `schema=None` skips validation; a
   provider `ProviderError` propagates unchanged (runner is the boundary). **155 passing, 1
   skipped. Phase 2 closed.** (F09 provider-interface decision pruned → `build-journal.md`.)
-- **Feature 11 Extraction schemas built (2026-06-23):** `app/extraction/schemas.py` —
-  `validate_request_schema` (root `type:object` + a **targeted denylist** of out-of-subset
-  keywords → `InvalidSchemaError(ValueError)`), `normalize_for_strict` (deep copy; sets
-  `additionalProperties:false` + `required:[all keys]` on every object node with `properties` —
-  for the provider's strict tool only), and `validate_output` (`Draft202012Validator` +
-  `FORMAT_CHECKER` against the **original** user schema; lets jsonschema `ValidationError`
-  propagate for F12 to wrap). The subset walk is structure-aware (`_iter_subschemas`), so a
-  property literally named `not` is accepted. `app/models.py` `ExtractRequest` wires the gate via a
-  `@field_validator` (→ 422 in F16); **`JobResponse` deferred to F13/F16**. **149 passing, 1
-  skipped.** (F08 cleaner decision pruned → `build-journal.md`.)
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
 - **The fetch contract returns a `FetchResult`** (html, mode, status, content_type, final_url) so the fallback matrix can branch — not bare HTML. The browser builds it from the **real** `page.goto()` response + `page.url`, never hardcoded `200`/`text/html`/original URL.

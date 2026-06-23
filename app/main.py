@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.api import health
+from app.api import extract, health
 from app.config import get_settings
 from app.fetching.browser import BrowserManager
 from app.jobs.scheduler import Scheduler
@@ -43,6 +43,7 @@ def create_app() -> FastAPI:
     # v1 DNS-rebinding baseline: only serve requests whose Host is allow-listed.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
     app.include_router(health.router)
+    app.include_router(extract.router)
     return app
 
 
