@@ -6,6 +6,8 @@ the network or an LLM. `base_url="http://127.0.0.1"` keeps the Host allow-listed
 form POST is `application/x-www-form-urlencoded` (`client.post(data=...)`).
 """
 
+import csv
+import io
 import json
 import uuid
 from datetime import UTC, datetime
@@ -399,3 +401,95 @@ def test_jobs_table_links_to_detail(monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_list(monkeypatch, [job])
         resp = client.get("/partials/jobs")
     assert f'href="/jobs/{job.id}/view"' in resp.text
+
+
+# --- F20: GET /jobs/{id}/export (JSON/CSV download) ---
+
+
+def test_export_json_equals_stored_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _detail_job(
+        JobStatus.done,
+        result={"items": [{"a": 1}, {"a": 2}]},
+        mode="http",
+        started=True,
+        finished=True,
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/export?format=json")
+    assert resp.status_code == 200
+    assert "application/json" in resp.headers["content-type"]
+    disposition = resp.headers["content-disposition"]
+    assert "attachment" in disposition and f"job-{job.id}.json" in disposition
+    assert json.loads(resp.text) == job.result
+
+
+def test_export_defaults_to_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _detail_job(JobStatus.done, result={"a": 1}, started=True, finished=True)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/export")  # no ?format
+    assert resp.status_code == 200
+    assert json.loads(resp.text) == {"a": 1}
+
+
+def test_export_csv_has_header_and_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _detail_job(
+        JobStatus.done,
+        result={"items": [{"a": 1}, {"a": 2, "b": 3}]},
+        started=True,
+        finished=True,
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/export?format=csv")
+    assert resp.status_code == 200
+    assert "text/csv" in resp.headers["content-type"]
+    assert f"job-{job.id}.csv" in resp.headers["content-disposition"]
+    rows = list(csv.reader(io.StringIO(resp.text)))
+    assert rows[0] == ["a", "b"]
+    assert rows[1] == ["1", ""]
+    assert rows[2] == ["2", "3"]
+
+
+def test_export_unknown_id_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, None)
+        resp = client.get("/jobs/does-not-exist/export?format=json")
+    assert resp.status_code == 404
+
+
+def test_export_unfinished_job_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _detail_job(JobStatus.running, mode="browser", started=True)  # no result
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/export?format=json")
+    assert resp.status_code == 409
+
+
+def test_export_bad_format_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _detail_job(JobStatus.done, result={"a": 1}, started=True, finished=True)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/export?format=xml")
+    assert resp.status_code == 422
+
+
+def test_detail_done_shows_export_buttons(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _detail_job(
+        JobStatus.done, result={"a": 1}, mode="http", started=True, finished=True
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/view")
+    body = resp.text
+    assert f"/jobs/{job.id}/export?format=json" in body
+    assert f"/jobs/{job.id}/export?format=csv" in body
+
+
+def test_detail_running_hides_export_buttons(monkeypatch: pytest.MonkeyPatch) -> None:
+    job = _detail_job(JobStatus.running, mode="browser", started=True)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/view")
+    assert "export?format=" not in resp.text

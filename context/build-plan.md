@@ -235,6 +235,14 @@ Download a result as JSON or CSV.
 - `GET /jobs/{id}/export?format=json|csv` streaming a file response generated on the fly (no persistence). CSV rules are explicit: flatten a list-of-objects envelope to rows with a stable column order (union of keys); single object → one row; empty result → header only; nested values → JSON-encoded cells; **escape formula-injection** (cells leading with `= + - @` are prefixed).
 - Verify: JSON export equals the stored result; CSV flattens a tabular result correctly, handles nested/empty/heterogeneous cases, and neutralizes a `=`-leading cell.
 
+> **Built 2026-06-23 (deviation noted):** serialization lives in a **pure module**
+> `app/dashboard/export.py` (route stays thin); the route returns a **plain `Response`** with a
+> `Content-Disposition` attachment header, **not** a `StreamingResponse` — the result is a fully
+> in-memory dict, so streaming would be theater (the "no persistence / generate on the fly" intent is
+> kept). The "list-of-objects envelope" is detected as a **single key whose value is a list of dicts**;
+> any other shape (incl. a single key holding a list of *scalars*) → one row. Unknown id → 404,
+> existing-but-no-result → 409, bad `?format` → 422. See `build-journal.md` → Feature 20.
+
 ---
 
 ## Phase 5 — Hardening & Extras

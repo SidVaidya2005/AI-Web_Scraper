@@ -11,35 +11,32 @@ immediately know what is done, what is in progress, and what is next.
 
 ## Current Status
 
-**Phase:** Phase 4 — Dashboard **in progress**
-**Last completed:** 19 Job detail & result viewer (2026-06-23)
-**Next:** 20 Result export (Phase 4 — Dashboard)
+**Phase:** Phase 4 — Dashboard **complete** → Phase 5 — Hardening & Extras next
+**Last completed:** 20 Result export (2026-06-23)
+**Next:** 21 Error handling, timeouts, retries & respectful client (Phase 5)
 
 **Carry-over into next session:**
-- **F19 built:** the single-job detail page. New `templates/job_detail.html` (`extends base.html`):
-  request summary (url, prompt, provider, render), status/mode/timestamps, then the result `<pre>`
-  (done) / error message (error) / "still in progress" note (queued/running). New
-  `GET /jobs/{job_id}/view` in `app/dashboard/routes.py` reads `JobStore.get()`; an unknown/evicted id
-  renders the template's **not-found state with HTTP 404** (styled HTML, not JSON). Result is
-  pretty-printed in the handler (`json.dumps(indent=2, ensure_ascii=False)`) and rendered in an
-  **autoescaped** `<pre>` — no `| safe`. F18's plain-text id is now an `<a href="/jobs/{id}/view">` in
-  `_jobs_table.html`. Detail-page CSS appended to `static/styles.css` (`.detail-meta`,
-  `pre.result-json`, `.back`). Approved plan: `~/.claude/plans/f19-job-detail-calm-hellman.md`.
-- **F19 escaping note (important):** Jinja autoescapes **double quotes too** (`"` → `&#34;`), so the
-  rendered `result_json` shows escaped quotes in the raw HTML (renders fine in a browser). Tests assert
-  on word fragments + the escaped `&lt;script&gt;...` form, not literal JSON punctuation. The XSS test
-  injects `<script>alert(1)</script>` into `result` and asserts the raw tag is absent and the escaped
-  form present.
-- **Test trick (reused, extended for F19):** monkeypatch `app.state.job_store.get` (and `.list`) to
-  return crafted `Job`s for deterministic endpoint tests — safe at shutdown because
+- **F20 built:** result export. New **pure** module `app/dashboard/export.py` (`result_to_json`,
+  `result_to_csv`, `_escape_formula`, `_rows_for`, `_columns_for`, `_render_cell`) — stdlib only
+  (`csv`/`io`/`json`), no FastAPI/job-state. New `GET /jobs/{job_id}/export` in
+  `app/dashboard/routes.py`: read-only (no Origin check), `format: Literal["json","csv"] = "json"`,
+  returns a plain `Response` with `Content-Disposition: attachment; filename="job-{id}.{ext}"`.
+  Two `<a class="export-btn">` links added to the **done** block of `job_detail.html`; `.exports`/
+  `.export-btn` CSS appended. Approved plan: `~/.claude/plans/f20-result-export-elegant-muffin.md`.
+- **F20 CSV shape rules (locked):** a **single key whose value is a list of dicts** → one row per dict,
+  columns = union of keys in first-seen order; an **empty list envelope** (`{"items": []}`) or empty
+  result → header-only (no data rows); **any other shape** (incl. a single key holding a list of
+  *scalars*) → one row. Nested dict/list cells are JSON-encoded; `None` → blank; cells leading with
+  `= + - @` get a `'` prefix (negatives like `-5` are escaped too — accepted, per spec). `csv.writer`
+  handles comma/quote/newline quoting; formula-escaping is applied to **header and data** cells.
+- **F20 status codes:** unknown/evicted id → **404**; job exists but `result is None`
+  (queued/running/error) → **409**; bad `?format` → **422** (Literal validation, before the handler).
+  Export is a plain `Response`, **not** `StreamingResponse` — the result is already in-memory
+  (documented deviation from the build-plan's literal "streaming" wording).
+- **Test trick (reused for F20):** monkeypatch `app.state.job_store.get`/`.list` to return crafted
+  `Job`s for deterministic endpoint tests — safe at shutdown because
   `Scheduler._terminalize_survivors` swallows the `JobStateError` for ids absent from the real store.
-  A `_detail_job(...)` helper builds a Job carrying a result/error.
-- **Next is F20 (Result export):** `GET /jobs/{id}/export?format=json|csv` streaming a file response
-  generated on the fly (no persistence); add export buttons to `job_detail.html`. CSV rules (explicit):
-  flatten a list-of-objects **envelope** to rows with a stable column order (union of keys); single
-  object → one row; empty result → header only; nested values → JSON-encoded cells; **escape
-  formula-injection** (cells leading with `= + - @` are prefixed). Verify: JSON export equals the stored
-  result; CSV flattens tabular/nested/empty/heterogeneous correctly and neutralizes a `=`-leading cell.
+  CSV tests parse output back with `csv.reader` so they assert on **values, not quoting**.
 - **Locked store invariants:** only **terminal** jobs are evicted (TTL from `finished_at`; `MAX_JOBS`
   drops oldest terminal); `queued`/`running` are **never** evicted; transitions enforced
   (`mark_running` only from `queued`; `mark_done`/`mark_error` only from non-terminal; `mark_error`
@@ -47,10 +44,12 @@ immediately know what is done, what is in progress, and what is next.
   `mark_*` under the lock.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F19 — new `templates/job_detail.html`; modified
-  `app/dashboard/routes.py`, `templates/_jobs_table.html`, `static/styles.css`,
-  `tests/test_dashboard.py`, and these context docs. HEAD is `a891721 4.18-Jobs-list-&-live-status`
-  (F18 is committed). (Reminder: per CLAUDE.md, commits never add a co-author.)
+- **Uncommitted (commit only when asked):** F19 + F20. F20 adds `app/dashboard/export.py`,
+  `tests/test_export.py`; modifies `app/dashboard/routes.py`, `templates/job_detail.html`,
+  `static/styles.css`, `tests/test_dashboard.py`, and these context docs. (F19 from the prior session
+  is also still uncommitted: `templates/job_detail.html`, `app/dashboard/routes.py`,
+  `templates/_jobs_table.html`, `static/styles.css`, `tests/test_dashboard.py`.) HEAD is
+  `a891721 4.18-Jobs-list-&-live-status`. (Reminder: per CLAUDE.md, commits never add a co-author.)
 
 ---
 
@@ -84,7 +83,7 @@ immediately know what is done, what is in progress, and what is next.
 - [x] 17 Dashboard layout & submission form
 - [x] 18 Jobs list & live status
 - [x] 19 Job detail & result viewer
-- [ ] 20 Result export
+- [x] 20 Result export
 
 ### Phase 5 — Hardening & Extras
 - [ ] 21 Error handling, timeouts, retries & respectful client
@@ -97,6 +96,13 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 20 Result export built (2026-06-23):** `GET /jobs/{id}/export?format=json|csv` +
+  pure `app/dashboard/export.py`. CSV: single-key list-of-dicts envelope → row-per-dict (union
+  columns, first-seen); empty/empty-list → header-only; other shapes → one row; nested → JSON cell;
+  `= + - @`-leading cells prefixed `'` (formula-injection). Plain `Response` + attachment header (not
+  `StreamingResponse` — in-memory). Unknown id → 404, no-result → 409, bad format → 422. Export
+  buttons on the **done** detail page only. **251 passing, 1 skipped. Phase 4 closed.** (F15 scheduler
+  decision pruned → `build-journal.md`.)
 - **Feature 19 Job detail & result viewer built (2026-06-23):** `templates/job_detail.html`
   (`extends base.html`) + `GET /jobs/{job_id}/view` reading `JobStore.get()`. Unknown id → **styled
   HTML 404** (template not-found state, not JSON); **static snapshot** (no polling — a running job shows
@@ -127,14 +133,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   `ALLOWED_HOSTS` → `403`), a **shared** route dependency F17's dashboard POST reuses. Router wired into
   `create_app()`. **206 passing, 1 skipped. Phase 3 closed.** (F11 extraction-schemas decision pruned →
   `build-journal.md`.)
-- **Feature 15 Job scheduler built (2026-06-23):** `app/jobs/scheduler.py` `Scheduler` +
-  `SchedulerShuttingDown`. **Two bounds:** `MAX_CONCURRENT_JOBS` semaphore (running) **and** a
-  synchronous atomic `try_reserve()` (`int` check-and-increment, no `await`) capping in-flight+waiting
-  at `MAX_QUEUED_JOBS`. `submit()` is sync, retains the task ref (no fire-and-forget); the admission slot
-  is released in the task's `finally` (one release per task, even on cancel). `shutdown()` closes
-  admission → drains within `SHUTDOWN_GRACE_SECONDS` → cancels stragglers → sweeps `store.list()` marking
-  non-terminal jobs `error`; lifespan drains **before** `browser_manager.aclose()`. Reuses F14's
-  `RunnerState`. **196 passing, 1 skipped.** (Pre-code F15 spec bullet pruned → `build-journal.md`.)
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
 - **The fetch contract returns a `FetchResult`** (html, mode, status, content_type, final_url) so the fallback matrix can branch — not bare HTML. The browser builds it from the **real** `page.goto()` response + `page.url`, never hardcoded `200`/`text/html`/original URL.

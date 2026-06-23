@@ -43,6 +43,10 @@
   {% if job.status == "done" %}
   <h3>Result</h3>
   <pre class="result-json">{{ result_json }}</pre>
+  <p class="exports">
+    <a class="export-btn" href="/jobs/{{ job.id }}/export?format=json">Export JSON</a>
+    <a class="export-btn" href="/jobs/{{ job.id }}/export?format=csv">Export CSV</a>
+  </p>
   {% elif job.status == "error" %}
   <h3>Error</h3>
   <p class="result error">{{ job.error }}</p>

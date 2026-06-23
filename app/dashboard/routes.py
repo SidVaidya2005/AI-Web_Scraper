@@ -8,13 +8,15 @@ returns an HTML fragment — a success note that re-arms polling (out-of-band sw
 """
 
 import json
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from app.api.security import require_trusted_origin
+from app.dashboard import export
 from app.jobs.scheduler import SchedulerShuttingDown
 from app.jobs.submission import AtCapacityError, enqueue
 from app.models import ExtractRequest
@@ -24,6 +26,13 @@ router = APIRouter(tags=["dashboard"])
 _BUSY_MESSAGE = "Server is at capacity — please retry in a few seconds."
 _SHUTDOWN_MESSAGE = "Server is shutting down — please retry shortly."
 _STOP_POLLING_STATUS = 286  # htmx: halt the #jobs every-2s poll
+
+# Maps the ?format value to its (media type, serializer). The route's Literal keeps
+# the key total, so the lookup never misses.
+_EXPORTERS = {
+    "json": ("application/json; charset=utf-8", export.result_to_json),
+    "csv": ("text/csv; charset=utf-8", export.result_to_csv),
+}
 
 
 def _templates(request: Request) -> Jinja2Templates:
@@ -90,6 +99,32 @@ async def job_detail(job_id: str, request: Request) -> HTMLResponse:
     )
     return _templates(request).TemplateResponse(
         request, "job_detail.html", {"job": job, "result_json": result_json}
+    )
+
+
+@router.get("/jobs/{job_id}/export")
+async def export_job(
+    job_id: str, request: Request, format: Literal["json", "csv"] = "json"
+) -> Response:
+    """Download a finished job's result as a JSON or CSV file, generated on the fly.
+
+    A read-only `GET`, so no Origin check. An unknown/evicted id → 404; a job that
+    exists but has no result yet (queued/running/error) → 409. The result is returned
+    as an attachment; CSV cells that look like spreadsheet formulas are neutralized
+    (see `app/dashboard/export.py`). Nothing is persisted.
+    """
+    job = await request.app.state.job_store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.result is None:
+        raise HTTPException(status_code=409, detail="job has no result to export")
+    media_type, serialize = _EXPORTERS[format]
+    return Response(
+        content=serialize(job.result),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="job-{job_id}.{format}"'
+        },
     )
 
 

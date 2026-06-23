@@ -1246,6 +1246,74 @@ detail view); `GET /jobs/{job_id}/view` added to `app/dashboard/routes.py`; the 
 
 ---
 
+## Phase 4 · Feature 20 — Result export  *(2026-06-23)*
+
+**Built:** `app/dashboard/export.py` (new, pure: `result_to_json`, `result_to_csv`, plus private
+`_rows_for` / `_columns_for` / `_render_cell` / `_escape_formula`); `GET /jobs/{job_id}/export` added
+to `app/dashboard/routes.py`; export buttons in the **done** block of `templates/job_detail.html`;
+`.exports`/`.export-btn` CSS in `static/styles.css`; `tests/test_export.py` (11 pure-module tests) +
+8 route tests appended to `tests/test_dashboard.py`. No new dependencies (stdlib `csv`/`io`/`json`).
+Closes Phase 4. Approved plan: `~/.claude/plans/f20-result-export-elegant-muffin.md`.
+
+**Decisions** (architect session, developer-confirmed):
+- **Serialization is a pure module, separate from the route** (`app/dashboard/export.py`). Keeps the
+  handler thin (`code-standards.md` → no business logic in handlers) and makes the CSV matrix
+  unit-testable without HTTP. Imports stdlib only — no FastAPI, no job state, no I/O.
+- **CSV row detection = single-key list-of-objects envelope.** `_rows_for` returns the inner list
+  **iff** the result has exactly one key whose value is a `list` of `dict`s (`all(isinstance(i, dict)…)`,
+  which is vacuously true for an empty list → header-only). Every other shape — multi-key dict, single
+  key with a scalar value, or a single key holding a **list of scalars** — becomes one row
+  (`[result] if result else []`). The permissive "first list value anywhere" option was rejected: it
+  silently drops sibling scalar fields.
+- **Columns = union of row keys, first-seen order**, built with an insertion-ordered `dict` as a set
+  (`setdefault`). Missing keys in a heterogeneous row → blank cell via `row.get(col)`.
+- **Cell rendering:** `None` → `""`; `dict`/`list` → `json.dumps(…, ensure_ascii=False)` (nested values
+  are JSON cells); everything else → `str(value)`. Formula-injection: a cell whose text starts with
+  `= + - @` is prefixed with `'` — applied to **header and data** cells (keys are LLM/scrape-derived
+  too). Per the spec's explicit rule, a negative number like `-5` is escaped to `'-5` (accepted
+  tradeoff). `csv.writer` over `io.StringIO` handles comma/quote/newline quoting on top.
+- **Plain `Response`, not `StreamingResponse`** — the result is a fully materialized in-memory dict, so
+  streaming would be theater. Documented deviation from the build-plan's literal "streaming a file
+  response" wording (the "no persistence" intent — generate on the fly, nothing written to disk — is
+  honored). Returns `Content-Disposition: attachment; filename="job-{id}.{ext}"` with
+  `application/json; charset=utf-8` / `text/csv; charset=utf-8`.
+- **Status codes:** read-only `GET`, so **no Origin check** (matches `/jobs/{id}/view`). Unknown/evicted
+  id → `HTTPException(404)`; a job that exists but has `result is None` (queued/running/error) →
+  `HTTPException(409)`; `format` is a `Literal["json","csv"]` defaulting to `json`, so a bad value
+  (`?format=xml`) → **422** at the boundary before the handler runs. Errors are `HTTPException` (JSON
+  detail), not the styled-HTML 404 the `/view` *page* uses — export is a download trigger, not a page.
+
+**Gotchas:**
+- **`all(isinstance(i, dict) for i in [])` is `True`**, which is exactly what makes
+  `{"items": []}` resolve to zero rows (header-only) rather than one row holding `"[]"`. A list of
+  *scalars* (`{"tags": ["x","y"]}`) is non-empty and not all-dicts, so it correctly falls through to the
+  one-row branch with the list JSON-encoded in its cell — pinned by a test.
+- **Four `E501`s on docstrings/comments** in `export.py` on the first lint pass (the `= + - @`/`first-seen`
+  phrasing ran long). Shortened the prose rather than adding `# noqa` (consistent with the codebase,
+  which keeps lines ≤88 without suppressions). The `writer.writerow([...])` comprehension was wrapped.
+- **`format` shadows the builtin** but ruff's selected rules (`E,F,I,UP,B`) don't include flake8-builtins
+  (`A`), so it's clean; kept the name to bind the `?format=` query param.
+- **CSV tests parse output back with `csv.reader`** and assert on **values, not quoting** — robust to
+  how the writer quotes embedded commas/quotes/newlines (e.g. a JSON cell `["x", "y"]` is emitted quoted
+  but reads back as the original string). Empty/empty-list cases assert `rows in ([], [[]])`.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 59 files formatted.
+- `uv run pytest -q` → **251 passed, 1 skipped** (232 prior + 19 new), exit 0. The skip is the
+  Chromium-gated browser integration test; one pre-existing Starlette/httpx TestClient deprecation
+  warning, unrelated.
+- Confirmed by test: JSON export parses equal to the stored `result` with an `attachment`
+  `Content-Disposition`; `?format` defaults to json; CSV of `{"items":[{"a":1},{"a":2,"b":3}]}` →
+  header `a,b`, rows `1,` / `2,3`; single object → one row; list-of-scalars → one row with a JSON cell;
+  nested dict/list → JSON cells; `{}` and `{"items":[]}` → header-only (no crash); each of `= + - @`
+  neutralized with a `'` prefix; comma/quote/newline round-trip; unknown id → 404; running job → 409;
+  `?format=xml` → 422; the done detail page shows both export links, a running one shows none.
+- Invariants held: `app/dashboard/export.py` imports only stdlib (`csv`/`io`/`json`/`typing`) — no
+  FastAPI, no job state, no network, no `os`/env; the route stays thin (lookup → serialize → Response);
+  F19's result/error autoescaping is untouched.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

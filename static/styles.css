@@ -198,3 +198,21 @@ pre.result-json {
   overflow-wrap: anywhere;
   font-size: 0.85rem;
 }
+
+/* Result export buttons (F20). */
+.exports {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.export-btn {
+  display: inline-block;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 6px;
+  padding: 0.4rem 0.9rem;
+  text-decoration: none;
+}
