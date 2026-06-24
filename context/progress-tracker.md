@@ -12,42 +12,34 @@ immediately know what is done, what is in progress, and what is next.
 ## Current Status
 
 **Phase:** Phase 5 — Hardening & Extras (in progress)
-**Last completed:** 21 Error handling, timeouts, retries & respectful client (2026-06-23)
-**Next:** 22 Second provider (OpenAI) (Phase 5)
+**Last completed:** 22 Second provider (OpenAI) (2026-06-24)
+**Next:** 23 Logging, metrics & content-overflow handling (Phase 5)
 
 **Carry-over into next session:**
-- **F21 built:** the respectful client + two deferred loose ends. New module
-  `app/fetching/respect.py` (`RespectfulClient`: per-host **rolling-window rate limiter** +
-  **TTL robots.txt cache**; `guard` / `check_rate_limit` / `check_robots`), held on
-  `app.state.respectful_client` and called by the **runner** (`await guard(url)` before
-  `fetch_service.fetch`) — `fetch_service` untouched. Two new errors
-  (`RobotsDisallowedError`, `RateLimitedError`, both `FetchError` subclasses, non-transient).
-  Render `goto` `PlaywrightTimeoutError` now mapped to a readable `FetchError` in
-  `browser.render`. `app.fetching` logger added (`respect.py`, `browser.py`). **No new env
-  vars.** Approved plan: `~/.claude/plans/21-error-handling-timeouts-wobbly-pie.md`.
-- **Timeouts/retries were already shipped** (F05 fetch timeout, F06 render timeout, F10 LLM
-  timeout, F07 bounded transient retry, F14 readable errors) — F21 **verified** them, did not
-  re-implement. The genuinely-new work was the respectful client + render-timeout map + logging.
-- **F21 locked behaviors:** rate-limit over cap → **reject** (`RateLimitedError`, never holds a
-  scheduler slot); rolling window via per-host `deque[float]`, pruned synchronously (atomic, no
-  `await` between check+append — same as `scheduler.try_reserve`); **robots fail-open** on
-  404/5xx/timeout/unreachable, but **`SSRFError` propagates** (caught before the broad
-  `except FetchError`); robots fetched via `http_fetcher` **directly** (SSRF-guarded, size-capped,
-  no gate recursion) and parsed with stdlib `RobotFileParser.parse`. Robots TTL is a module
-  constant (`_ROBOTS_CACHE_TTL_SECONDS = 3600`), not an env var.
-- **`RobotFileParser` gotcha:** a fresh, never-parsed parser has `last_checked == 0` and
-  `can_fetch()` returns **False** — so the fail-open "allow" case is represented as **`None`** in
-  the cache (return early), never a blank parser. Real parser built only from a 200 body.
-- **Placement deviation (documented):** the gate is invoked by the **runner**, not inside
-  `fetch_service` (keeps its signature + 23 tests untouched; the runner is the sole caller). The
-  `RespectfulClient` module still lives in `app/fetching/`. Annotated under F21 in `build-plan.md`.
+- **F22 built:** the OpenAI provider proves the abstraction. New `app/providers/openai_provider.py`
+  (`OpenAIProvider`, **Chat Completions** + forced function calling + strict) and new shared
+  `app/providers/_prompts.py` (`SYSTEM_PROMPT`, `TOOL_NAME`, `build_user_message`) — Anthropic was
+  refactored onto it so the prompt-injection framing is byte-identical across providers. Registry
+  gained an `openai` branch that **fails fast** on missing key/model. **No new deps** (`openai`
+  2.43.0 already installed), **no new env vars**. Approved plan:
+  `~/.claude/plans/f22-second-provider-fizzy-stardust.md`.
+- **The one real divergence from Anthropic:** OpenAI tool-call `arguments` is a JSON **string** →
+  `json.loads` + guard (unparseable → `ProviderError`; non-`dict` like a top-level list →
+  `ProviderError`). Anthropic's `block.input` is already a dict. Token param is
+  `max_completion_tokens` (Anthropic uses `max_tokens`), so `_MAX_TOKENS = 4096` stays local to
+  each provider, not shared.
+- **Engine unchanged:** `normalize_for_strict()` (F11) already emits the closed schema
+  (`additionalProperties:false` + all-`required`) that OpenAI strict needs, so the provider just
+  sets `strict: true`; no-schema path mirrors Anthropic (loose params, no strict).
+- **Registry:** `OPENAI_MODEL` has no default — missing key → `ProviderError("OPENAI_API_KEY not
+  configured")`, missing model → `ProviderError("OPENAI_MODEL not configured")` at `get_provider`.
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F21. Adds `app/fetching/respect.py`,
-  `tests/test_respect.py`; modifies `app/fetching/errors.py`, `app/fetching/browser.py`,
-  `app/main.py`, `app/jobs/runner.py`, `tests/test_browser.py`, `tests/test_jobs_runner.py`,
-  `tests/test_main.py`, and these context docs. HEAD is `4d5f64f 4.20-Result-export`. (Reminder:
-  per CLAUDE.md, commits never add a co-author.)
+- **Uncommitted (commit only when asked):** F22. Adds `app/providers/openai_provider.py`,
+  `app/providers/_prompts.py`; modifies `app/providers/anthropic_provider.py`,
+  `app/providers/registry.py`, `tests/test_providers.py`, and these context docs. HEAD is
+  `fdc0277 5.21-Error-handling,timeouts,retries`. (Reminder: per CLAUDE.md, commits never add a
+  co-author.)
 
 ---
 
@@ -85,7 +77,7 @@ immediately know what is done, what is in progress, and what is next.
 
 ### Phase 5 — Hardening & Extras
 - [x] 21 Error handling, timeouts, retries & respectful client
-- [ ] 22 Second provider (OpenAI)
+- [x] 22 Second provider (OpenAI)
 - [ ] 23 Logging, metrics & content-overflow handling
 
 ---
@@ -94,6 +86,14 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 22 Second provider (OpenAI) built (2026-06-24):** `app/providers/openai_provider.py`
+  (`OpenAIProvider` via **Chat Completions** forced function calling + strict) mirrors the Anthropic
+  contract; shared framing hoisted to `app/providers/_prompts.py` (`SYSTEM_PROMPT`/`TOOL_NAME`/
+  `build_user_message`, Anthropic refactored onto it). **Only real divergence:** OpenAI `arguments`
+  is a JSON **string** → `json.loads` + object-envelope guard. Registry `openai` branch **fails fast**
+  on missing key/model (`OPENAI_MODEL` has no default); token param is `max_completion_tokens`. Engine
+  unchanged (F11 `normalize_for_strict` already satisfies OpenAI strict). **No new deps/env vars. 278
+  passing, 1 skipped.** (F17 dashboard decision pruned → `build-journal.md`.)
 - **Feature 21 Error handling, timeouts, retries & respectful client built (2026-06-23):** new
   `app/fetching/respect.py` `RespectfulClient` — per-host **rolling-window rate limiter** (over cap →
   non-retryable `RateLimitedError`) + **TTL robots.txt cache** (fail-open on 404/5xx/unreachable;
@@ -122,14 +122,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   `200`. `286` both swaps the body and stops the poll (verified via Context7: htmx default
   `{"code":"[23]..","swap":true}`). Job id is plain text — the `/jobs/{id}/view` link is F19. The F17
   `#jobs` container + submit re-arm untouched. **225 passing, 1 skipped.** (F13 decision pruned →
-  `build-journal.md`.)
-- **Feature 17 Dashboard layout & submit form built (2026-06-23):** server-rendered shell + working
-  form. `app/dashboard/routes.py` `GET /` + form-encoded `POST /submit` (`Form(...)`, reuses
-  `require_trusted_origin`) → shared **`app/jobs/submission.py::enqueue`** (atomic reserve→create→submit,
-  raising `AtCapacityError`/`SchedulerShuttingDown`); **F16 `/extract` refactored onto `enqueue`**.
-  Success re-arms the `#jobs` poller via an `hx-swap-oob` fragment; bad input / capacity / shutdown →
-  **inline `200` error** (HTMX won't swap non-2xx), no job. **htmx 2.0.4 vendored same-origin** (no
-  CDN/SRI); added dependency **`python-multipart`**. **220 passing, 1 skipped.** (F12 decision pruned →
   `build-journal.md`.)
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.

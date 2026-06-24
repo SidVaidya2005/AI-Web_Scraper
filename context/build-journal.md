@@ -1402,6 +1402,70 @@ test in `tests/test_main.py`. **No new dependencies** (stdlib `urllib.robotparse
 
 ---
 
+## Phase 5 · Feature 22 — Second provider (OpenAI)  *(2026-06-24)*
+
+**Built:** `app/providers/openai_provider.py` (new, `OpenAIProvider`); `app/providers/_prompts.py`
+(new shared module: `SYSTEM_PROMPT`, `TOOL_NAME`, `build_user_message`); `app/providers/registry.py`
+(new `openai` branch, fail-fast on missing key/model); `app/providers/anthropic_provider.py`
+refactored onto `_prompts`; `tests/test_providers.py` (+10 tests; repointed shared-constant import).
+**No new dependencies** (`openai` 2.43.0 already installed), **no new env vars** (`OPENAI_API_KEY`/
+`OPENAI_MODEL` settings + `.env.example` already present from F02/F01). Approved plan:
+`~/.claude/plans/f22-second-provider-fizzy-stardust.md`.
+
+**Decisions** (architect session, developer-confirmed via AskUserQuestion):
+- **Chat Completions API, not the Responses API.** `client.chat.completions.create` with forced
+  function calling maps 1:1 to the Anthropic Messages+forced-tool design (read a tool call, return
+  its arguments). Most stable strict-mode path; keeps the two providers structurally parallel.
+- **Shared prompt/tool framing hoisted into `app/providers/_prompts.py`** (not duplicated). The
+  untrusted-content `SYSTEM_PROMPT`, the forced-`TOOL_NAME` (`emit_extraction`), and the
+  `<page_content>`-delimited `build_user_message` are defined once so the prompt-injection defense
+  is byte-identical across both providers. Anthropic was refactored onto it; `_MAX_TOKENS` stays
+  local to each provider (the per-call token-cap *param name* differs — see next bullet).
+- **`max_completion_tokens`, not `max_tokens`.** Chat Completions' `max_tokens` is deprecated for
+  newer models; the current param is `max_completion_tokens` (Anthropic keeps `max_tokens`). Both
+  default to `_MAX_TOKENS = 4096` but under different keyword names, so the constant isn't shared.
+- **Registry fails fast on missing OpenAI config.** `OPENAI_MODEL` has no default (ids come from
+  settings, never hardcoded), so the `openai` branch raises `ProviderError("OPENAI_API_KEY not
+  configured")` / `("OPENAI_MODEL not configured")` at `get_provider(...)` rather than letting an
+  empty model id fail opaquely at call time. Mirrors the Anthropic missing-key check.
+
+**Gotchas:**
+- **The one real code divergence: OpenAI tool-call `arguments` is a JSON *string*.** Confirmed via
+  Context7 (`ResponseFunctionToolCall.arguments: str` — "A JSON string of the arguments"). So the
+  provider `json.loads` it and guards the parse: a `JSONDecodeError`/`TypeError` →
+  `ProviderError("returned unparseable extraction")`, and a non-`dict` result (e.g. a top-level
+  JSON list) → `ProviderError("returned a non-object extraction")` — upholding the object-envelope
+  contract. Anthropic's `block.input` is already a parsed dict, so it needs none of this.
+- **OpenAI strict requires a closed schema** (`additionalProperties:false` + every prop `required`).
+  `normalize_for_strict()` (F11) already emits exactly that on every object node, so the engine
+  (`app/extraction/engine.py`) is **unchanged** — it passes `normalize_for_strict(schema)` and the
+  provider just sets `function["strict"] = True`. No-schema path mirrors Anthropic: loose
+  `{"type":"object","additionalProperties":true}` params, no `strict`.
+- **Pre-existing F22 placeholder tests stayed green by intent.** `test_providers.py` already had
+  three openai-registry tests asserting `ProviderError`; two were upgraded to assert the *specific*
+  message and a real `OpenAIProvider` is returned when key+model are set (proving override-outranks-
+  config now actually routes to the openai branch instead of failing as "not available").
+- **`ruff format` reflowed `openai_provider.py`** (collapsed a now-short `raise` onto one line); one
+  `E501` on a test docstring line, shortened. Then clean.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 63 files formatted.
+- `uv run pytest -q` → **278 passed, 1 skipped** (268 prior + 10 new), exit 0. Skip is the
+  Chromium-gated browser integration test; the lone warning is the pre-existing Starlette/httpx
+  TestClient deprecation, unrelated.
+- Confirmed by test: a JSON-string `arguments` parses into the object envelope; `strict` is set iff
+  a schema is supplied and the schema is forwarded as `function.parameters`; the call carries the
+  shared system prompt, the `<page_content>` delimiter, the forwarded model id, and the forced
+  `tool_choice`; an SDK error maps to the generic `"LLM provider request failed"` (raw text never
+  leaks); no tool call / unparseable args / non-object args each raise `ProviderError`; the registry
+  returns an `OpenAIProvider` (model from settings) from config or override, and fails fast on a
+  missing key or model.
+- **Provider-isolation invariant held (grep-verified):** `grep -rn "import openai\|from openai" app/`
+  → only `app/providers/openai_provider.py`. The shared `_prompts.py` imports no SDK; `anthropic`
+  stays confined to `anthropic_provider.py`.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

@@ -277,6 +277,15 @@ Prove the provider abstraction.
 - `app/providers/openai_provider.py` mirroring the forced-tool + `strict` contract and the object envelope; selectable via `LLM_PROVIDER`/per-request `provider`.
 - Verify: with the SDK mocked, the same extraction returns the same result shape as Anthropic; switching providers needs no caller change.
 
+> **Built 2026-06-24 (decisions noted):** uses the **Chat Completions** API (forced function
+> calling + strict), not the Responses API. The shared untrusted-content framing was **hoisted into
+> a new `app/providers/_prompts.py`** (`SYSTEM_PROMPT`/`TOOL_NAME`/`build_user_message`) so it's
+> byte-identical across providers — Anthropic refactored onto it. OpenAI's tool-call `arguments` is a
+> JSON **string**, so the provider `json.loads` it and guards unparseable / non-object output as
+> `ProviderError`. Token param is `max_completion_tokens`. The registry **fails fast** on a missing
+> `OPENAI_API_KEY`/`OPENAI_MODEL` (no default model id). Engine untouched — F11 `normalize_for_strict`
+> already emits the closed schema OpenAI strict needs. See `build-journal.md` → Feature 22.
+
 ### 23 Logging, metrics & content-overflow handling
 
 Lightweight observability and a path past the char cap.
