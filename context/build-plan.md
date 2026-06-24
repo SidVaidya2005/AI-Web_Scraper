@@ -294,6 +294,16 @@ Lightweight observability and a path past the char cap.
 - Structured request/job logging; per-job timing (fetch ms, render ms, LLM ms) recorded on the job for the detail view. Optional: token-aware budgeting / chunk-and-merge for pages over `MAX_CONTENT_CHARS` (the documented out-of-v1 follow-up).
 - Verify: a completed job exposes timing fields; logs trace a job through its lifecycle.
 
+> **Built 2026-06-24 (decisions noted):** **timing = `fetch_ms` + `extract_ms` + `total_ms`**
+> (rounded ms), measured in the runner with `perf_counter` and surfaced on `Job` + `JobResponse` +
+> the detail page — **no separate `render_ms`** (`fetch_ms` covers render; the `mode` field already
+> says http vs browser), and timing is recorded **on `done` only**. **Logging stayed plain text**
+> (enriched `key=value` INFO lifecycle lines in the runner + a request-`accepted` line in `enqueue`),
+> not JSON. **Content-overflow = detect & signal only** (the "optional" deep version was *not* built):
+> `cleaner.clean()` now returns `CleanResult(text, truncated)`, the runner records `content_truncated`
+> + logs a `WARNING`, and the detail page shows a note — token-aware chunk-and-merge remains the
+> documented future follow-up. No new deps/env vars. See `build-journal.md` → Feature 23.
+
 ---
 
 ## Feature Count

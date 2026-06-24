@@ -36,6 +36,11 @@ class Job(BaseModel):
     created_at: datetime
     started_at: datetime | None = None  # set when the worker begins (running)
     finished_at: datetime | None = None  # set on a terminal state; TTL measured from it
+    # Per-job metrics, recorded on `done` (rounded ms); None until then.
+    fetch_ms: int | None = None  # fetch_service call (incl. render when mode=browser)
+    extract_ms: int | None = None  # the LLM extraction call
+    total_ms: int | None = None  # whole pipeline: guard -> fetch -> clean -> extract
+    content_truncated: bool | None = None  # cleaned text hit the char cap (lossy)
 
     @property
     def is_terminal(self) -> bool:

@@ -71,6 +71,10 @@ def test_jobresponse_from_job_maps_fields() -> None:
         created_at=now,
         started_at=now,
         finished_at=now,
+        fetch_ms=120,
+        extract_ms=950,
+        total_ms=1100,
+        content_truncated=True,
     )
     resp = JobResponse.from_job(job)
     assert resp.job_id == "abc"
@@ -82,6 +86,10 @@ def test_jobresponse_from_job_maps_fields() -> None:
     assert resp.result == {"items": [1, 2]}
     assert resp.error is None
     assert resp.created_at == now == resp.started_at == resp.finished_at
+    assert resp.fetch_ms == 120
+    assert resp.extract_ms == 950
+    assert resp.total_ms == 1100
+    assert resp.content_truncated is True
 
 
 def test_jobresponse_carries_error_and_nulls_for_unfinished() -> None:
@@ -95,3 +103,6 @@ def test_jobresponse_carries_error_and_nulls_for_unfinished() -> None:
     assert resp.error == "boom"
     assert resp.mode is None and resp.result is None
     assert resp.started_at is None and resp.finished_at is None
+    # metrics are unset on a job that never reached done
+    assert resp.fetch_ms is None and resp.extract_ms is None
+    assert resp.total_ms is None and resp.content_truncated is None

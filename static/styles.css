@@ -8,6 +8,8 @@
   --ok-fg: #065f46;
   --err-bg: #fef2f2;
   --err-fg: #991b1b;
+  --warn-bg: #fffbeb;
+  --warn-fg: #92400e;
   --border: #d1d5db;
 }
 
@@ -104,6 +106,11 @@ button {
 .result.error {
   background: var(--err-bg);
   color: var(--err-fg);
+}
+
+.result.warn {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
 }
 
 .jobs-empty {

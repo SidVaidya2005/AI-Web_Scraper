@@ -282,6 +282,10 @@ def _detail_job(
     mode: str | None = None,
     started: bool = False,
     finished: bool = False,
+    fetch_ms: int | None = None,
+    extract_ms: int | None = None,
+    total_ms: int | None = None,
+    content_truncated: bool | None = None,
 ) -> Job:
     """Build a Job carrying a result/error for the detail-page tests."""
     return Job(
@@ -294,6 +298,10 @@ def _detail_job(
         created_at=_STAMP,
         started_at=_STAMP if started else None,
         finished_at=_STAMP if finished else None,
+        fetch_ms=fetch_ms,
+        extract_ms=extract_ms,
+        total_ms=total_ms,
+        content_truncated=content_truncated,
     )
 
 
@@ -322,6 +330,29 @@ def test_job_detail_done_renders_result(monkeypatch: pytest.MonkeyPatch) -> None
     assert job.id in body
     assert "result-json" in body  # the <pre> result block rendered
     assert "title" in body and "Hello" in body
+
+
+def test_job_detail_shows_timing_and_truncation_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = _detail_job(
+        JobStatus.done,
+        result={"title": "Hello"},
+        mode="http",
+        started=True,
+        finished=True,
+        fetch_ms=120,
+        extract_ms=950,
+        total_ms=1100,
+        content_truncated=True,
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _patch_get(monkeypatch, job)
+        resp = client.get(f"/jobs/{job.id}/view")
+    body = resp.text
+    assert resp.status_code == 200
+    assert "120 ms" in body and "950 ms" in body and "1100 ms" in body
+    assert "truncated" in body  # the lossy-truncation note rendered
 
 
 def test_job_detail_error_renders_message(monkeypatch: pytest.MonkeyPatch) -> None:

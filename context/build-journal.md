@@ -1466,6 +1466,73 @@ refactored onto `_prompts`; `tests/test_providers.py` (+10 tests; repointed shar
 
 ---
 
+## Phase 5 · Feature 23 — Logging, metrics & content-overflow handling  *(2026-06-24)*
+
+**Built:** `app/cleaning/cleaner.py` (`clean()` now returns a new frozen `CleanResult(text,
+truncated)` instead of a bare `str`); `app/jobs/models.py` (+`fetch_ms`/`extract_ms`/`total_ms`/
+`content_truncated` on `Job`); `app/jobs/store.py` (`mark_done` takes the four metrics);
+`app/jobs/runner.py` (perf_counter timing, lifecycle INFO logs, truncation warning, new cleaner
+result); `app/jobs/submission.py` (request-accepted INFO log in `enqueue`); `app/models.py`
+(`JobResponse` carries the metrics + `from_job` maps them); `templates/job_detail.html` (timing rows
++ truncation note); `static/styles.css` (`--warn-*` vars + `.result.warn`). Tests updated/added in
+`test_cleaner.py`, `test_jobs_store.py`, `test_jobs_runner.py`, `test_models.py`, `test_dashboard.py`.
+**No new dependencies, no new env vars.** Approved plan:
+`~/.claude/plans/f23-logging-metrics-linear-lantern.md`. Closes Phase 5 and the build plan.
+
+**Decisions** (architect session, developer-confirmed via AskUserQuestion):
+- **Content-overflow = detect & signal only** (not chunk-and-merge). The cleaner reports whether the
+  char cap dropped content; the runner records `content_truncated` on the job, logs a `WARNING`, and
+  the detail page shows a note. The v1 lossy-truncation behavior is unchanged — F23 only makes the
+  loss visible. Token-aware chunk-and-merge stays the documented future follow-up.
+- **Timing = `fetch_ms` + `extract_ms` + `total_ms`** (rounded int ms), measured at the runner
+  boundary with `time.perf_counter()`. `fetch_ms` covers the whole `fetch_service.fetch` call
+  including render; the existing `mode` field already distinguishes http vs browser, so **no separate
+  `render_ms`** is threaded through `FetchResult`/the two fetchers. `total_ms` starts right after
+  `mark_running` (covers guard→fetch→clean→extract, not the queued wait).
+- **Logging = enriched plain text** (not JSON). `app/logging.py` is untouched; lifecycle INFO lines
+  (`running` / `fetched` / `done`, with `key=value` fields) live in the runner and one
+  request-`accepted` line in the shared `enqueue` (so API and dashboard form both trace).
+- **Surface = Job + detail page + API.** The metrics go on `Job`, render on `job_detail.html`, and
+  are included in `JobResponse` (so `GET /jobs` and `GET /jobs/{id}` expose them) — consistent with
+  how `mode`/timestamps already appear in both.
+
+**Assumptions / scope choices:**
+- **Timing is recorded on `done` only.** The error arms and `mark_error` are untouched (a failed job
+  leaves the metrics `None`); revisitable if failed-job timing is later wanted. `content_truncated`
+  is `None` until a job is cleaned.
+
+**Gotchas:**
+- **`clean()`'s return type changed** (`str` → `CleanResult`). The runner is the *only* caller
+  (grep-confirmed `cleaner.clean` / `from app.cleaning`), so the ripple was contained to the runner +
+  `test_cleaner.py`. Other modules' `_DROP_SELECTOR`/`needs_render` in `fetch_service` are separate
+  and untouched.
+- **New `JobResponse` fields are required (no default), matching the existing style** — every field
+  is populated by `from_job`, and `JobResponse(` is never constructed directly anywhere else
+  (grep-confirmed), so requiredness is safe.
+- **Jinja `~` for the timing cells:** `(job.fetch_ms ~ " ms") if job.fetch_ms is not none else "—"`
+  stringifies the int and shows `—` when unset.
+- **caplog with `propagate=False`:** the unit tests don't call `configure_logging` (no app), so the
+  `app.jobs` logger still propagates and `caplog.at_level(..., logger="app.jobs")` captures the
+  lifecycle/warning lines.
+- **Five `E501`s** on the new comments/log lines + one `ruff format` reflow of `runner.py` — fixed,
+  then clean.
+
+**Verified:**
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` → 63 files formatted.
+- `uv run pytest -q` → **284 passed, 1 skipped** (278 prior + 6 net new), exit 0. Skip is the
+  Chromium-gated browser integration test; the lone warning is the pre-existing Starlette/httpx
+  TestClient deprecation, unrelated.
+- Confirmed by test: a done job exposes non-`None` `fetch_ms`/`extract_ms`/`total_ms` and
+  `content_truncated=False` for under-cap content; an over-cap clean flags
+  `content_truncated=True`, emits the runner `WARNING`, and renders the truncation note + `120/950/
+  1100 ms` on the detail page; lifecycle logs trace one job through `running → fetched → done`;
+  `mark_done` stores the metrics (and defaults them to `None`); `JobResponse.from_job` carries them.
+- Invariants held: cleaner still pure (`selectolax` + `app.config` only — no network/job-state/LLM);
+  timing read via injected settings (no env access outside `app/config.py`); runner still the error
+  boundary and never raises; behavior otherwise unchanged.
+
+---
+
 ## Archived spec decisions  *(pruned from progress-tracker.md "Key Decisions", 2026-06-22)*
 
 _Pre-code decisions from the 2026-06-21 context review, moved here to keep the tracker's

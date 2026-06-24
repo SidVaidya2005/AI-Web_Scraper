@@ -47,4 +47,11 @@ async def enqueue(request: ExtractRequest, *, scheduler, store: JobStore) -> Job
         await store.mark_error(job.id, error=_SHUTDOWN_ERROR)
         logger.warning("rejected job %s: scheduler shutting down", job.id)
         raise
+    logger.info(
+        "job %s accepted url=%s provider=%s render=%s",
+        job.id,
+        request.url,
+        request.provider or "default",
+        request.render,
+    )
     return job

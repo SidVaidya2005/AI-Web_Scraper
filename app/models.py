@@ -60,6 +60,10 @@ class JobResponse(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    fetch_ms: int | None  # per-stage timing (ms), set on done
+    extract_ms: int | None
+    total_ms: int | None
+    content_truncated: bool | None  # cleaned text hit the char cap (lossy)
 
     @classmethod
     def from_job(cls, job: "Job") -> "JobResponse":
@@ -75,4 +79,8 @@ class JobResponse(BaseModel):
             created_at=job.created_at,
             started_at=job.started_at,
             finished_at=job.finished_at,
+            fetch_ms=job.fetch_ms,
+            extract_ms=job.extract_ms,
+            total_ms=job.total_ms,
+            content_truncated=job.content_truncated,
         )

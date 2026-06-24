@@ -38,7 +38,17 @@
     <dd>{{ job.started_at.strftime("%Y-%m-%d %H:%M:%S UTC") if job.started_at else "—" }}</dd>
     <dt>Finished</dt>
     <dd>{{ job.finished_at.strftime("%Y-%m-%d %H:%M:%S UTC") if job.finished_at else "—" }}</dd>
+    <dt>Fetch</dt>
+    <dd>{{ (job.fetch_ms ~ " ms") if job.fetch_ms is not none else "—" }}</dd>
+    <dt>Extract</dt>
+    <dd>{{ (job.extract_ms ~ " ms") if job.extract_ms is not none else "—" }}</dd>
+    <dt>Total</dt>
+    <dd>{{ (job.total_ms ~ " ms") if job.total_ms is not none else "—" }}</dd>
   </dl>
+
+  {% if job.content_truncated %}
+  <p class="result warn">⚠ Page content was truncated to the character cap — the result may be incomplete.</p>
+  {% endif %}
 
   {% if job.status == "done" %}
   <h3>Result</h3>

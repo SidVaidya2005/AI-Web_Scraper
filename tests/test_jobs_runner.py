@@ -12,6 +12,7 @@ raises even against an already-terminal or missing job; the URL is coerced to `s
 and the provider override is forwarded.
 """
 
+import logging
 import types
 from typing import Any
 
@@ -114,6 +115,11 @@ async def test_happy_path_marks_done_with_result_and_http_mode(monkeypatch) -> N
     assert done.started_at is not None
     assert done.finished_at is not None
     assert done.error is None
+    # F23: timing recorded on done; tiny fixture is well under the cap.
+    assert done.fetch_ms is not None and done.fetch_ms >= 0
+    assert done.extract_ms is not None and done.extract_ms >= 0
+    assert done.total_ms is not None and done.total_ms >= 0
+    assert done.content_truncated is False
 
 
 async def test_browser_mode_propagates_to_job(monkeypatch) -> None:
@@ -337,3 +343,60 @@ async def test_rate_limited_marks_error(monkeypatch) -> None:
     assert errored.status is JobStatus.error
     assert errored.error is not None
     assert errored.error.startswith("rate limit exceeded for host")
+
+
+async def test_content_truncation_flagged_and_warned(monkeypatch, caplog) -> None:
+    # A tiny cap forces truncation of the fixture body text (~27 chars).
+    settings = _settings(max_content_chars=10)
+    store = JobStore(settings=settings)
+    job = await store.create(
+        ExtractRequest(url="https://example.com/", prompt="get it")
+    )
+
+    async def fake_fetch(url: str, **kwargs: Any) -> FetchResult:
+        return _fetch_result()
+
+    monkeypatch.setattr(fetch_service, "fetch", fake_fetch)
+    monkeypatch.setattr(
+        registry,
+        "get_provider",
+        lambda settings, *, override=None: _FakeProvider(result={"ok": True}),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.jobs"):
+        await run_job(job.id, app_state=_app_state(store, settings))
+
+    done = await store.get(job.id)
+    assert done is not None
+    assert done.status is JobStatus.done
+    assert done.content_truncated is True
+    assert any("truncated" in record.getMessage() for record in caplog.records)
+
+
+async def test_lifecycle_logs_trace_job_through_pipeline(monkeypatch, caplog) -> None:
+    store = JobStore(settings=_settings())
+    job = await store.create(
+        ExtractRequest(url="https://example.com/", prompt="get it")
+    )
+
+    async def fake_fetch(url: str, **kwargs: Any) -> FetchResult:
+        return _fetch_result()
+
+    monkeypatch.setattr(fetch_service, "fetch", fake_fetch)
+    monkeypatch.setattr(
+        registry,
+        "get_provider",
+        lambda settings, *, override=None: _FakeProvider(result={"ok": True}),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.jobs"):
+        await run_job(job.id, app_state=_app_state(store, _settings()))
+
+    trace = " ".join(
+        record.getMessage()
+        for record in caplog.records
+        if job.id in record.getMessage()
+    )
+    assert "running" in trace
+    assert "fetched" in trace
+    assert "done" in trace

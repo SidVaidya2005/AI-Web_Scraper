@@ -11,35 +11,43 @@ immediately know what is done, what is in progress, and what is next.
 
 ## Current Status
 
-**Phase:** Phase 5 — Hardening & Extras (in progress)
-**Last completed:** 22 Second provider (OpenAI) (2026-06-24)
-**Next:** 23 Logging, metrics & content-overflow handling (Phase 5)
+**Phase:** Phase 5 — Hardening & Extras (complete)
+**Last completed:** 23 Logging, metrics & content-overflow handling (2026-06-24)
+**Next:** — all 23 features built; the build plan is complete.
 
 **Carry-over into next session:**
-- **F22 built:** the OpenAI provider proves the abstraction. New `app/providers/openai_provider.py`
-  (`OpenAIProvider`, **Chat Completions** + forced function calling + strict) and new shared
-  `app/providers/_prompts.py` (`SYSTEM_PROMPT`, `TOOL_NAME`, `build_user_message`) — Anthropic was
-  refactored onto it so the prompt-injection framing is byte-identical across providers. Registry
-  gained an `openai` branch that **fails fast** on missing key/model. **No new deps** (`openai`
-  2.43.0 already installed), **no new env vars**. Approved plan:
-  `~/.claude/plans/f22-second-provider-fizzy-stardust.md`.
-- **The one real divergence from Anthropic:** OpenAI tool-call `arguments` is a JSON **string** →
-  `json.loads` + guard (unparseable → `ProviderError`; non-`dict` like a top-level list →
-  `ProviderError`). Anthropic's `block.input` is already a dict. Token param is
-  `max_completion_tokens` (Anthropic uses `max_tokens`), so `_MAX_TOKENS = 4096` stays local to
-  each provider, not shared.
-- **Engine unchanged:** `normalize_for_strict()` (F11) already emits the closed schema
-  (`additionalProperties:false` + all-`required`) that OpenAI strict needs, so the provider just
-  sets `strict: true`; no-schema path mirrors Anthropic (loose params, no strict).
-- **Registry:** `OPENAI_MODEL` has no default — missing key → `ProviderError("OPENAI_API_KEY not
-  configured")`, missing model → `ProviderError("OPENAI_MODEL not configured")` at `get_provider`.
+- **F23 built (closes the build plan):** the pipeline is now observable. `cleaner.clean()` returns a
+  frozen `CleanResult(text, truncated)`; `Job` + `JobResponse` carry `fetch_ms`/`extract_ms`/
+  `total_ms`/`content_truncated`; the runner times stages with `perf_counter`, logs the lifecycle
+  (`running → fetched → done`, INFO) plus a truncation `WARNING`, and `enqueue` logs a request-
+  `accepted` line; the detail page shows timings + a truncation note. **No new deps, no new env
+  vars.** Approved plan: `~/.claude/plans/f23-logging-metrics-linear-lantern.md`.
+- **Scope choices to remember:** content-overflow is **detect & signal only** (no chunk-and-merge —
+  still the documented future follow-up); there is **no separate `render_ms`** (`fetch_ms` covers
+  render; `mode` says which); timing is recorded **on `done` only** (error path leaves metrics
+  `None`); logging stayed **plain text** (no JSON). `clean()`'s return-type change rippled only to the
+  runner (its sole caller).
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F22. Adds `app/providers/openai_provider.py`,
-  `app/providers/_prompts.py`; modifies `app/providers/anthropic_provider.py`,
-  `app/providers/registry.py`, `tests/test_providers.py`, and these context docs. HEAD is
-  `fdc0277 5.21-Error-handling,timeouts,retries`. (Reminder: per CLAUDE.md, commits never add a
-  co-author.)
+- **Uncommitted (commit only when asked):** F23. Adds `CleanResult` to `app/cleaning/cleaner.py`;
+  modifies `app/jobs/models.py`, `app/jobs/store.py`, `app/jobs/runner.py`, `app/jobs/submission.py`,
+  `app/models.py`, `templates/job_detail.html`, `static/styles.css`, the five test files above, and
+  these context docs. HEAD is `6d3b657 5.22-Second-provider(OpenAI)`. (Reminder: per CLAUDE.md,
+  commits never add a co-author.)
+
+**Open question — no feature is queued (the 23-item plan is done).** Candidate next directions, all
+documented as follow-ups in the context docs (none scoped/approved yet — confirm with the developer
+before starting):
+- **Commit F23** (the only immediately-pending action).
+- **Token-aware budgeting / chunk-and-merge** for pages over `MAX_CONTENT_CHARS` — the deferred deep
+  version of overflow handling (F23 only detects/signals truncation).
+- **IP-pinning / byte-counting SSRF egress proxy** in front of both fetchers — the complete fix for
+  the browser path's residual DNS-rebinding risk; would let `render` be safe-by-default instead of
+  opt-in (see `architecture.md` invariants).
+- **Auth + CSRF tokens** — hard prerequisites before any public/remote bind (today: loopback-local /
+  trusted-private-network only).
+- **Smaller hardening:** failed-job timing (record metrics on the `error` path too), provider/client
+  caching/lifecycle (noted F21+), structured JSON logging if log aggregation is ever needed.
 
 ---
 
@@ -78,7 +86,7 @@ immediately know what is done, what is in progress, and what is next.
 ### Phase 5 — Hardening & Extras
 - [x] 21 Error handling, timeouts, retries & respectful client
 - [x] 22 Second provider (OpenAI)
-- [ ] 23 Logging, metrics & content-overflow handling
+- [x] 23 Logging, metrics & content-overflow handling
 
 ---
 
@@ -86,6 +94,15 @@ immediately know what is done, what is in progress, and what is next.
 
 _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Older/lower-stakes ones are pruned into `build-journal.md` once this passes ~10 bullets.)_
 
+- **Feature 23 Logging, metrics & content-overflow handling built (2026-06-24) — closes the build
+  plan:** per-job timing (`fetch_ms`/`extract_ms`/`total_ms`, rounded ms) measured in the runner with
+  `perf_counter` and stored on `Job` + `JobResponse` + the detail page; enriched plain-text lifecycle
+  INFO logs (`running → fetched → done`) plus a request-`accepted` line in `enqueue`. Content-overflow
+  is **detect & signal only**: `cleaner.clean()` returns `CleanResult(text, truncated)`, the runner
+  records `content_truncated` + logs a `WARNING`, the detail page shows a note — **no chunk-and-merge**
+  (still a future follow-up). No separate `render_ms` (`fetch_ms` covers render; `mode` says which);
+  timing recorded on `done` only. **No new deps/env vars. 284 passing, 1 skipped.** (F18 dashboard
+  decision pruned → `build-journal.md`.)
 - **Feature 22 Second provider (OpenAI) built (2026-06-24):** `app/providers/openai_provider.py`
   (`OpenAIProvider` via **Chat Completions** forced function calling + strict) mirrors the Anthropic
   contract; shared framing hoisted to `app/providers/_prompts.py` (`SYSTEM_PROMPT`/`TOOL_NAME`/
@@ -116,13 +133,6 @@ _(Spec decisions from the 2026-06-21 context review + per-feature decisions. Old
   **autoescaped** `<pre>` — first untrusted-content render, no `| safe`; an injected `<script>` comes
   back `&lt;script&gt;`. F18's plain-text job id is now an `<a href="/jobs/{id}/view">`. **232 passing,
   1 skipped.** (F14 runner decision pruned → `build-journal.md`.)
-- **Feature 18 Jobs list & live status built (2026-06-23):** `templates/_jobs_table.html` (id, status,
-  mode, created/started/finished UTC `HH:MM:SS`) + `GET /partials/jobs` rendering it from
-  `JobStore.list()`; returns **HTTP `286`** when `all(job.is_terminal ...)` (empty → `286` too) else
-  `200`. `286` both swaps the body and stops the poll (verified via Context7: htmx default
-  `{"code":"[23]..","swap":true}`). Job id is plain text — the `/jobs/{id}/view` link is F19. The F17
-  `#jobs` container + submit re-arm untouched. **225 passing, 1 skipped.** (F13 decision pruned →
-  `build-journal.md`.)
 - **Request `output_schema` is JSON Schema with root `type: object`, validated with `jsonschema[format]`** using `Draft202012Validator` + `FORMAT_CHECKER` (plain `jsonschema.validate` ignores `format`) — never `create_model`.
 - **Result is always an object envelope** (lists under a property key), consistent with the root-object schema rule.
 - **The fetch contract returns a `FetchResult`** (html, mode, status, content_type, final_url) so the fallback matrix can branch — not bare HTML. The browser builds it from the **real** `page.goto()` response + `page.url`, never hardcoded `200`/`text/html`/original URL.

@@ -70,14 +70,28 @@ class JobStore:
             job.started_at = datetime.now(tz=UTC)
             return job
 
-    async def mark_done(self, job_id: str, *, result: dict, mode: str) -> Job:
-        """Transition a non-terminal job to `done` with its result and fetch mode."""
+    async def mark_done(
+        self,
+        job_id: str,
+        *,
+        result: dict,
+        mode: str,
+        fetch_ms: int | None = None,
+        extract_ms: int | None = None,
+        total_ms: int | None = None,
+        content_truncated: bool | None = None,
+    ) -> Job:
+        """Transition a non-terminal job to `done` with result, mode, and metrics."""
         async with self._lock:
             job = self._require(job_id)
             self._ensure_non_terminal(job)
             job.status = JobStatus.done
             job.result = result
             job.mode = mode
+            job.fetch_ms = fetch_ms
+            job.extract_ms = extract_ms
+            job.total_ms = total_ms
+            job.content_truncated = content_truncated
             job.finished_at = datetime.now(tz=UTC)
             return job
 

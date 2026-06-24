@@ -69,6 +69,36 @@ async def test_mark_done_sets_result_mode_and_finished_at() -> None:
     assert done.finished_at is not None
 
 
+async def test_mark_done_records_timing_and_truncation_metrics() -> None:
+    store = _store()
+    job = await store.create(_req())
+    await store.mark_running(job.id)
+    done = await store.mark_done(
+        job.id,
+        result={"ok": True},
+        mode="browser",
+        fetch_ms=120,
+        extract_ms=950,
+        total_ms=1100,
+        content_truncated=True,
+    )
+    assert done.fetch_ms == 120
+    assert done.extract_ms == 950
+    assert done.total_ms == 1100
+    assert done.content_truncated is True
+
+
+async def test_mark_done_metrics_default_to_none() -> None:
+    store = _store()
+    job = await store.create(_req())
+    await store.mark_running(job.id)
+    done = await store.mark_done(job.id, result={}, mode="http")
+    assert done.fetch_ms is None
+    assert done.extract_ms is None
+    assert done.total_ms is None
+    assert done.content_truncated is None
+
+
 async def test_mark_error_from_running_and_from_queued() -> None:
     store = _store()
     # running → error
