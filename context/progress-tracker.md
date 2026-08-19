@@ -29,16 +29,22 @@ immediately know what is done, what is in progress, and what is next.
   runner (its sole caller).
 - Local Python is 3.14.x but the project is **pinned to 3.12** via `.python-version`
   (uv fetched 3.12.13) — always work through `uv run`, not the system interpreter.
-- **Uncommitted (commit only when asked):** F23. Adds `CleanResult` to `app/cleaning/cleaner.py`;
-  modifies `app/jobs/models.py`, `app/jobs/store.py`, `app/jobs/runner.py`, `app/jobs/submission.py`,
-  `app/models.py`, `templates/job_detail.html`, `static/styles.css`, the five test files above, and
-  these context docs. HEAD is `6d3b657 5.22-Second-provider(OpenAI)`. (Reminder: per CLAUDE.md,
-  commits never add a co-author.)
+- **Working tree is clean; nothing pending.** F23 was committed as
+  `99337f0 5.23-Logging,metrics-content-overflowhandling`. HEAD is now
+  `fad7107 Rewrite README for the completed project`, and `origin/main` is at the same
+  commit — local and remote are in sync. (Reminder: per CLAUDE.md, commits never add a co-author.)
+- **README rewritten (2026-08-19), post-plan:** the old one still said "in design / not yet built"
+  with a scaffold-gated quickstart. Now written for portfolio viewers → API users → contributors, with
+  badges, a Mermaid pipeline diagram, an illustrative request/response example (real shape, plausible
+  values), an endpoint table, a key-config table (8 of 26 vars; rest in `.env.example`), and the three
+  invariants a change is most likely to break. **Deployment section cut** — its Render-specific detail
+  (reserved ports, internal hostname) already lives in `architecture.md` → Binding trust. Status
+  framing removed deliberately: status belongs in this file, not a blockquote that goes stale.
+  Unverified: the Mermaid diagram was never rendered — eyeball it on GitHub.
 
 **Open question — no feature is queued (the 23-item plan is done).** Candidate next directions, all
 documented as follow-ups in the context docs (none scoped/approved yet — confirm with the developer
 before starting):
-- **Commit F23** (the only immediately-pending action).
 - **Token-aware budgeting / chunk-and-merge** for pages over `MAX_CONTENT_CHARS` — the deferred deep
   version of overflow handling (F23 only detects/signals truncation).
 - **IP-pinning / byte-counting SSRF egress proxy** in front of both fetchers — the complete fix for
